@@ -1,27 +1,12 @@
-# Neural-Trade-Robinhood-
-
-Python-based trading automation tool designed to interface with the Robinhood platform. It bridges the gap between raw market data and trade execution by integrating Machine Learning (AI) logic to identify buy/sell opportunities.
-
-⚠️ DISCLAIMER: This software is for educational purposes only. I am not a financial advisor. Algorithmic trading involves significant risk. Use this software at your own risk.
-
-🚀 Features
-Secure Authentication: Handles login via robin_stocks with support for Multi-Factor Authentication (MFA).
-
-Data Pipeline: Fetches real-time stock quotes, historical data, and account holdings.
-
-AI Integration: Modular design allows for plugging in ML models (e.g., Sentiment Analysis, LSTM, Regression) to generate trade signals.
-
-Automated Execution: Executes buy/sell orders based on defined logic and risk management parameters.
-
-Safety Guards: Includes checks for "Pattern Day Trader" (PDT) protection and buying power limits.
-
-🛠️ Tech Stack
-Language: Python
-
-API Wrapper: robin_stocks
-
-Data Manipulation: pandas, numpy
-
-Machine Learning: scikit-learn / TensorFlow (configurable)
-
-Environment Management: python-dotenv
+📈 Neural-Trade-RobinhoodA full-stack algorithmic trading platform that automates technical analysis and machine learning strategies on Robinhood. This system features a "Strategy Tournament" engine that logs the performance of multiple algorithms (Trend Following, Mean Reversion, Gradient Boosting) into a PostgreSQL database to statistically determine the best trading logic for different market regimes.🏗️ Tech StackLanguage: Python 3.13+Trading API: robin_stocks (Robinhood), yfinance (Data Feeds)Data Science: pandas, pandas_ta, numpy, scikit-learnDatabase: PostgreSQLBackend Framework: Flask (for dashboard and API endpoints)🚀 Key Features1. Multi-Strategy ArchitectureThe bot does not rely on a single algorithm. It supports a "Squad" of strategies:The Trend Surfer: Uses 200-day SMA logic to capture long-term bull runs.The Rubber Band: Uses Bollinger Band Reversion to trade sideways/choppy markets (e.g., NIO).The ML Sniper: (Experimental) Uses Gradient Boosting & Random Forest to predict short-term moves based on volume and momentum.2. Live Trading EngineSafety First: Checks available cash (not margin) and reserves a buffer before every trade.Regime Detection: Automatically detects if a stock is in a "Bull" or "Bear" phase to switch strategies.Execution: Places fractional share orders directly via the Robinhood API.3. 📊 Performance Analysis & Database LoggingCrucially, this project does not just "fire and forget." It stores detailed analytics of every decision into PostgreSQL for audit and refinement.The Data Pipeline:Daily Prediction Log: Every morning, the system runs all strategies (even the inactive ones) and logs their "vote" (Buy/Sell/Hold) to the database.Outcome Tagging: A scheduled cron job runs 24 hours later to fetch the actual stock movement and updates the previous day's log.Statistical Scoring: Queries run against the DB to calculate real-time Sharpe Ratios, Precision, and Drawdown for each strategy.💾 Database SchemaThe application uses a relational schema to track model drift and accuracy over time.strategy_logs TableStores the raw decision from every model, every day.ColumnTypeDescriptionidSERIALPrimary KeytimestampTIMESTAMPTime of analysistickerVARCHAR(10)e.g., "NIO", "NVDA"strategy_nameVARCHAR(50)e.g., "Trend_SMA200", "ML_GradientBoost"signalVARCHAR(10)"BUY", "SELL", "HOLD"confidenceFLOAT0.0 - 1.0 (For ML models)market_priceFLOATPrice at the time of signalperformance_metrics TableUsed for the "Tournament" scoring.ColumnTypeDescriptionlog_idINTForeign Key to strategy_logsactual_return_1dFLOAT% Change of stock next dayactual_return_1wFLOAT% Change of stock next weekis_correctBOOLEANDid the signal match the market direction?🛠️ Installation & Setup1. PrerequisitesPython 3.10+ installed.PostgreSQL installed and running locally or on the cloud.Robinhood Account (Cash account recommended).2. Clone and InstallBashgit clone https://github.com/your-username/Neural-Trade-Robinhood.git
+cd Neural-Trade-Robinhood
+pip install -r requirements.txt
+3. ConfigurationCreate a .env file for your database credentials:BashDB_HOST=localhost
+DB_NAME=trading_bot
+DB_USER=your_username
+DB_PASS=your_password
+4. AuthenticationTo generate your Robinhood token (valid for 24 hours):Login to Robinhood Web.Open DevTools -> Application -> Local Storage.Copy the Authorization token.Run:Bashpython update_token.py
+(Paste the token when prompted).🏃‍♂️ UsageRunning the Live BotTo execute the active strategy (defaults to "Trend Surfer" for active stocks, "Rubber Band" for choppy ones):Bashpython live_trader.py
+Running the Strategy TournamentTo backtest all models and generate a scorecard:Bashpython ml_tournament.py
+Visualizing PerformanceTo generate charts showing entries, exits, and wealth curves:Bashpython visualize_strategy.py
+⚠️ DisclaimerThis software is for educational purposes only. Do not risk money you cannot afford to lose. The authors are not responsible for any financial losses incurred by using this software.
