@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # 📈 Neural-Trade-Robinhood
 
 A full-stack algorithmic trading platform that automates technical analysis and machine learning strategies on Robinhood. This system features a "Strategy Tournament" engine that logs the performance of multiple algorithms (Trend Following, Mean Reversion, Gradient Boosting) into a PostgreSQL database to statistically determine the best trading logic for different market regimes.
