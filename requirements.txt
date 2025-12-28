@@ -1,0 +1,9 @@
+robin_stocks==3.3.0
+pandas
+numpy
+python-dotenv
+scikit-learn
+tensorflow
+pandas_ta
+matplotlib
+yfinance
