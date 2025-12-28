@@ -1,0 +1,26 @@
+# --- Robinhood API Client ---
+robin_stocks==3.4.4      # The standard library for interacting with Robinhood
+
+# --- Data Manipulation ---
+pandas>=2.0.0            # Essential for handling stock data frames
+numpy>=1.24.0            # Mathematical operations
+
+# --- Machine Learning (The "Neural" Part) ---
+# Uncomment the one you are actually using:
+# tensorflow>=2.13.0     # If using Keras/TensorFlow
+# torch>=2.0.0           # If using PyTorch
+scikit-learn>=1.3.0      # For data preprocessing (scaling/normalization)
+
+# --- Technical Analysis ---
+ta-lib                   # Technical Analysis Library (RSI, MACD, etc.)
+# Alternately, if you struggle installing TA-Lib, use:
+# pandas-ta              # Pure Python alternative for technical indicators
+
+# --- Visualization (Optional but recommended) ---
+matplotlib>=3.7.0        # Plotting graphs for backtesting results
+plotly                   # Interactive charts
+
+# --- Environment & Utilities ---
+python-dotenv            # To load your Robinhood credentials securely from .env
+schedule                 # If you plan to run the bot on a timer (e.g., every minute)
+tqdm                     # Progress bars for training or backtesting loops
