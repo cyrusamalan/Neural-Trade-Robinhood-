@@ -71,8 +71,11 @@ def run_backtest(df, model, features):
     in_trade = False
     entry_price = 0
     
+    # Calculate where the 70% mark is
+    split_point = int(len(df) * 0.70)
+
     for i in range(len(df)):
-        if i < 20: continue 
+        if i < split_point: continue # Skip the past (Training data)
         
         row = df.iloc[i]
         price = row['Close']
