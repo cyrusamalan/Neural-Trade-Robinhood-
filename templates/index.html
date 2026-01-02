@@ -14,13 +14,8 @@
         label { font-size: 12px; color: #888; display: block; margin-bottom: 5px; }
         input { background: #333; border: 1px solid #555; color: white; padding: 8px; border-radius: 4px; }
         
-        /* --- FIXED: Force Grey Color when Disabled --- */
-        input:disabled { 
-            background: #222; 
-            color: #555 !important; /* <--- The Fix */
-            border-color: #444; 
-            cursor: not-allowed; 
-        } 
+        /* Fixed Disabled Style */
+        input:disabled { background: #222; color: #555 !important; border-color: #444; cursor: not-allowed; } 
         
         button { background: #333; border: 1px solid #555; color: white; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
         button:hover { background: #444; }
@@ -33,9 +28,12 @@
 
         .log-box { background: #000; padding: 10px; height: 300px; overflow-y: auto; border: 1px solid #333; font-size: 12px; font-family: monospace; }
         .log-entry { border-bottom: 1px solid #222; padding: 4px 0; }
-        .log-buy { color: #00e676; }
-        .log-profit { color: #ffff00; }
-        .log-loss { color: #ff3d00; }
+        
+        /* --- NEW COLORS --- */
+        .log-buy { color: #29b6f6; }   /* Blue for Buys (Easier to distinguish) */
+        .log-profit { color: #00e676; font-weight: bold; } /* Green for Profit */
+        .log-loss { color: #ff3d00; font-weight: bold; }   /* Red for Loss */
+        /* ------------------ */
         
         .live-indicator { height: 10px; width: 10px; background: #555; border-radius: 50%; display: inline-block; margin-right: 5px; }
         .live-active { background: #00e676; box-shadow: 0 0 10px #00e676; }
@@ -186,19 +184,13 @@
             document.getElementById('startBtn').style.display = 'none';
             document.getElementById('stopBtn').style.display = 'inline-block';
             document.getElementById('liveDot').classList.add('live-active');
-            
-            // DISABLE INPUTS
             inputs.forEach(input => input.disabled = true);
-            
             if(!poller) poller = setInterval(updateStatus, 5000); 
         } else {
             document.getElementById('startBtn').style.display = 'inline-block';
             document.getElementById('stopBtn').style.display = 'none';
             document.getElementById('liveDot').classList.remove('live-active');
-            
-            // ENABLE INPUTS
             inputs.forEach(input => input.disabled = false);
-            
             if(poller) { clearInterval(poller); poller = null; }
         }
     }
@@ -239,7 +231,15 @@
         logBox.innerHTML = "";
         
         if(data.logs) {
-            data.logs.forEach(l => logBox.innerHTML += `<div class="log-entry">${l.msg}</div>`);
+            data.logs.forEach(l => {
+                // ADD COLOR CLASSES BASED ON TYPE
+                let cls = "";
+                if(l.type === 'buy') cls = "log-buy";
+                if(l.type === 'profit') cls = "log-profit";
+                if(l.type === 'loss') cls = "log-loss";
+                
+                logBox.innerHTML += `<div class="log-entry ${cls}">[${l.date}] ${l.msg}</div>`;
+            });
             logBox.scrollTop = logBox.scrollHeight;
 
             if (data.bot_balance && data.bot_balance.length > 0) {
