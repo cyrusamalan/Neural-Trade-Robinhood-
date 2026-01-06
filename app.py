@@ -11,8 +11,25 @@ import time
 from datetime import datetime
 import numpy as np
 import joblib
+import day_engine
+
+# --- IMPORT DATABASE MODELS ---
+from models import db, Trade, ModelDecision, MarketEvent 
 
 app = Flask(__name__)
+
+# --- DATABASE CONFIGURATION (UPDATED) ---
+# Format: postgresql://user@localhost:5432/database_name
+# (No password needed, just 'postgres@')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres@localhost:5432/neuraltraderobinhood'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize the DB with this app
+db.init_app(app)
+
+# Create tables automatically if they don't exist
+with app.app_context():
+    db.create_all()
 
 # --- CONFIGURATION ---
 DATA_DIR = "datasets"  
@@ -30,7 +47,7 @@ live_state = {
     "entry_price": 0.0,
     "ticker": "INTC",
     "trade_amount": 10.00,
-    "interval": 60  # <--- NEW: Default Sleep Time (seconds)
+    "interval": 60 
 }
 
 def login_robinhood():
@@ -182,7 +199,7 @@ def background_trader():
             # --- DYNAMIC SLEEP ---
             sleep_time = live_state.get("interval", 60)
             live_state["status"] = f"Sleeping ({sleep_time}s) (Last: ${current_price:.2f})"
-            time.sleep(sleep_time) # <--- SLEEPS FOR USER DEFINED SECONDS
+            time.sleep(sleep_time) 
             
         except Exception as e:
             live_state["logs"].append(f"⚠️ Loop Error: {str(e)}")
@@ -200,7 +217,7 @@ def download_fresh_data(symbol):
         try:
             spy = yf.Ticker("SPY").history(period=period, interval="1h")['Close']
             vix = yf.Ticker("^VIX").history(period=period, interval="1h")['Close']
-            tnx = yf.Ticker("^TNX").history(period=period, interval="1h")['Close']
+            tnx = yf.Ticker("^TNX").history(period="59d", interval="1h")['Close']
             df['SP500_Close'] = spy; df['VIX_Close'] = vix; df['10Y_Yield'] = tnx
             df = df.ffill().bfill().fillna(0)
         except: pass
@@ -238,14 +255,12 @@ def toggle_trading():
     action = request.json.get('action')
     ticker = request.json.get('ticker', 'INTC').upper()
     
-    # READ USER INPUTS
-    try:
-        amount = float(request.json.get('amount', 10.0))
+    try: amount = float(request.json.get('amount', 10.0))
     except: amount = 10.0
     
     try:
         interval_min = float(request.json.get('interval', 1.0))
-        interval_sec = int(interval_min * 60) # Convert min to sec
+        interval_sec = int(interval_min * 60)
     except: interval_sec = 60
 
     if action == 'start':
@@ -253,7 +268,7 @@ def toggle_trading():
             live_state["active"] = True
             live_state["ticker"] = ticker
             live_state["trade_amount"] = amount
-            live_state["interval"] = interval_sec  # <--- SAVE IT
+            live_state["interval"] = interval_sec
             live_state["logs"].append(f"▶️ STARTING AI TRADER on {ticker} (${amount}, Every {interval_min}m)")
             t = threading.Thread(target=background_trader); t.daemon = True; t.start()
     else:
@@ -292,13 +307,32 @@ def update_dataset():
 @app.route('/run_sim', methods=['POST'])
 def run_sim():
     try:
+        # Get parameters from the frontend request
         ticker = request.json.get('ticker', 'INTC').upper()
-        filename = f"{ticker}_3y_enriched_data.csv"
-        file_path = os.path.join(DATA_DIR, filename)
-        if not os.path.exists(file_path): return jsonify({"error": "Data missing. Click Download button first."})
-        data = bot_engine.get_simulation_data(ticker, file_path)
-        return jsonify(data)
-    except Exception as e: return jsonify({"error": str(e)})
+        mode = request.json.get('mode', 'swing')  # Default to 'swing' if not specified
 
+        if mode == 'day':
+            # --- MODE A: DAY TRADING (New) ---
+            # Call the function in day_engine.py
+            print(f"☀️ Running Day Trading Sim for {ticker}...")
+            data = day_engine.run_day_simulation(app, ticker)
+        
+        else:
+            # --- MODE B: SWING TRADING (Original) ---
+            print(f"🌊 Running Swing Trading Sim for {ticker}...")
+            filename = f"{ticker}_3y_enriched_data.csv"
+            file_path = os.path.join(DATA_DIR, filename)
+            
+            if not os.path.exists(file_path): 
+                return jsonify({"error": "Data missing. Click Download button first."})
+            
+            # Call the function in bot_engine.py
+            data = bot_engine.get_simulation_data(app, ticker, file_path)
+        
+        return jsonify(data)
+
+    except Exception as e:
+        return jsonify({"error": str(e)})
+    
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
