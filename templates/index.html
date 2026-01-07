@@ -90,6 +90,9 @@
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
             <div>
                 <label>Status</label>
+                <label>Active Mode</label>
+                <div id="activeModeDisplay" style="font-size: 14px; font-weight: bold; color: #29b6f6;">---</div>
+                
                 <div id="botStatus" style="font-size: 14px; color: #aaa; margin-bottom: 10px;">Idle</div>
                 <label>Last Check</label>
                 <div id="lastCheck" style="font-size: 18px; color: white;">---</div>
@@ -154,6 +157,9 @@
         const ticker = document.getElementById('tickerInput').value;
         const amount = document.getElementById('tradeAmount').value;
         const interval = document.getElementById('tradeInterval').value;
+
+        const isDayMode = document.getElementById('dayModeSwitch').checked;
+        const mode = isDayMode ? 'day' : 'swing';
         
         const res = await fetch('/toggle_trading', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -161,7 +167,8 @@
                 action: action, 
                 ticker: ticker,
                 amount: amount,
-                interval: interval 
+                interval: interval,
+                mode: mode
             })
         });
         const data = await res.json();

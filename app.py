@@ -68,30 +68,34 @@ def background_trader():
         live_state["logs"].append(f"❌ Login Failed. Stopping.")
         return
 
-    # 1. SECURE BRAIN LOAD
+    # --- 1. DETERMINE MODE & FILES ---
+    current_mode = live_state.get("mode", "swing")
+    brain_file = "day_brain.pkl" if current_mode == 'day' else "brain.pkl"
+    data_interval = "5m" if current_mode == 'day' else "1h"
+    
+    # --- 2. LOAD THE CORRECT BRAIN ---
     model = None
     features = []
     
-    if os.path.exists("brain.pkl"):
+    if os.path.exists(brain_file):
         try:
-            brain_pkg = joblib.load("brain.pkl")
+            brain_pkg = joblib.load(brain_file)
             brain_ticker = brain_pkg.get('ticker', 'UNKNOWN')
             
+            # Verify Ticker matches
             if brain_ticker == live_state["ticker"]:
                 model = brain_pkg['model']
                 features = brain_pkg['features']
-                live_state["logs"].append(f"🧠 Brain Loaded: Trained on {brain_ticker}")
+                live_state["logs"].append(f"🧠 Loaded {brain_file} ({current_mode.upper()})")
             else:
-                live_state["logs"].append(f"⚠️ BRAIN MISMATCH: File is for {brain_ticker}, but you are trading {live_state['ticker']}.")
-                live_state["logs"].append("⚠️ Disabling AI. Reverting to 'Dumb Mode' (RSI Only).")
+                live_state["logs"].append(f"⚠️ Brain Mismatch: {brain_file} is for {brain_ticker}")
                 model = None
         except Exception as e:
-            live_state["logs"].append(f"❌ Corrupt Brain File: {e}")
-            model = None
+            live_state["logs"].append(f"❌ Corrupt Brain: {e}")
     else:
-        live_state["logs"].append("⚠️ No brain.pkl found. Running in Dumb Mode.")
+        live_state["logs"].append(f"⚠️ {brain_file} missing. Run Simulation first.")
 
-    # Check Positions
+    # --- 3. CHECK HOLDINGS ---
     try:
         positions = r.get_open_stock_positions(account_number=JOINT_ACCT_NUM)
         for pos in positions:
@@ -102,109 +106,118 @@ def background_trader():
                 live_state["logs"].append(f"ℹ️ Holding {live_state['ticker']} @ ${live_state['entry_price']:.2f}")
     except: pass
 
-    # 2. MAIN LOOP
+    # --- 4. TRADING LOOP ---
     while live_state["active"]:
         try:
             symbol = live_state["ticker"]
-            live_state["status"] = "Scanning Market..."
+            live_state["status"] = f"Scanning ({current_mode})..."
             
-            # Fetch Data
-            df = yf.Ticker(symbol).history(period="59d", interval="1h")
+            # A. DOWNLOAD DATA (Dynamic Interval)
+            period = "5d" if current_mode == 'day' else "59d"
+            df = yf.Ticker(symbol).history(period=period, interval=data_interval)
+            
             if df.empty:
                 time.sleep(60); continue
             
-            df.index = df.index.tz_localize(None)
-            
-            # Macros
-            try:
-                spy = yf.Ticker("SPY").history(period="59d", interval="1h")['Close']
-                vix = yf.Ticker("^VIX").history(period="59d", interval="1h")['Close']
-                tnx = yf.Ticker("^TNX").history(period="59d", interval="1h")['Close']
-                df['SP500_Close'] = spy; df['VIX_Close'] = vix; df['10Y_Yield'] = tnx
-                df = df.ffill().bfill()
-            except:
-                df['SP500_Close'] = df['Close']; df['VIX_Close'] = 20.0; df['10Y_Yield'] = 4.0
-
-            # Indicators
+            # B. CALCULATE FEATURES (Based on Mode)
+            # Both modes need RSI
             df['RSI'] = ta.rsi(df['Close'], length=14)
-            df['SMA_50'] = ta.sma(df['Close'], length=50)
-            df['SMA_200'] = ta.sma(df['Close'], length=200)
-            df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
-            bb = ta.bbands(df['Close'], length=20, std=2)
-            if bb is not None: df['BBP'] = bb[bb.columns[0]]
             
-            df['Rel_Strength_SP500'] = df['Close'] / df['SP500_Close']
-            df['Semi_Sector_Close'] = df['Close']
-            df['Volatility_20d'] = df['Close'].pct_change().rolling(20).std()
-            df = df.fillna(0)
+            if current_mode == 'day':
+                # Day Mode Specifics (VWAP)
+                df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
+                df['Dist_VWAP'] = (df['Close'] - df['VWAP']) / df['VWAP']
+                df['Volatility'] = df['Close'].pct_change().rolling(5).std()
+                # Day Mode Cleaning
+                df.ffill(inplace=True); df.bfill(inplace=True)
+            else:
+                # Swing Mode Specifics (SMA, Macro)
+                df['SMA_50'] = ta.sma(df['Close'], length=50)
+                df['SMA_200'] = ta.sma(df['Close'], length=200)
+                df['Volatility_20d'] = df['Close'].pct_change().rolling(20).std()
+                # Simple macro filler for live
+                df['SP500_Close'] = df['Close'] 
+                df['VIX_Close'] = 20.0
+                df = df.fillna(0)
 
-            # Snapshot
             last_row = df.iloc[-1]
             current_price = last_row['Close']
-            current_rsi = last_row['RSI']
-            status_msg = f"{datetime.now().strftime('%H:%M')} | ${current_price:.2f} | RSI: {current_rsi:.1f}"
-            live_state["last_update"] = status_msg
+            
+            # C. AI PREDICTION
+            ai_approved = False
+            if model:
+                try:
+                    # Extract only the features the brain was trained on
+                    feat_values = [last_row.get(f, 0) for f in features]
+                    prob = model.predict_proba([feat_values])[0][1]
+                    
+                    # Thresholds: Day mode needs higher confidence
+                    threshold = 0.55 if current_mode == 'day' else 0.51
+                    
+                    if prob > threshold:
+                        ai_approved = True
+                        live_state["logs"].append(f"🤖 AI BUY SIGNAL: {prob:.2f}")
+                    else:
+                        live_state["logs"].append(f"🛡️ AI Waiting: {prob:.2f}")
+                except Exception as e:
+                    live_state["logs"].append(f"⚠️ Prediction Error: {e}")
+            else:
+                # No Brain? Use simple RSI rule
+                if last_row['RSI'] < 30: ai_approved = True
 
-            # Trading Logic
+            # D. EXECUTE TRADES
             risk_amount = live_state.get("trade_amount", 10.00)
             
             if not live_state["in_trade"]:
-                if current_rsi < 45: 
-                    ai_approved = False
-                    if model:
-                        try:
-                            feat_df = pd.DataFrame([last_row[features].values], columns=features)
-                            prob = model.predict_proba(feat_df)[0][1]
-                            if prob > 0.51:
-                                ai_approved = True
-                                live_state["logs"].append(f"🤖 AI APPROVED: Buy Conf {prob:.2f}")
-                            else:
-                                live_state["logs"].append(f"🛡️ AI BLOCKED: Buy Conf {prob:.2f}")
-                        except: ai_approved = True 
-                    else: ai_approved = True 
-                    
-                    if ai_approved:
-                        try:
-                            r.order_buy_fractional_by_price(symbol, risk_amount, account_number=JOINT_ACCT_NUM)
-                            live_state["in_trade"] = True
-                            live_state["entry_price"] = current_price
-                            live_state["logs"].append(f"🚀 ORDER SENT: Bought ${risk_amount} of {symbol}")
-                        except Exception as e: live_state["logs"].append(f"❌ BUY FAILED: {str(e)}")
+                if ai_approved:
+                    try:
+                        r.order_buy_fractional_by_price(symbol, risk_amount, account_number=JOINT_ACCT_NUM)
+                        live_state["in_trade"] = True
+                        live_state["entry_price"] = current_price
+                        live_state["logs"].append(f"🚀 BOUGHT {symbol} @ ${current_price:.2f}")
+                    except Exception as e: live_state["logs"].append(f"❌ Buy Failed: {e}")
+            
             else:
-                if current_price < live_state["entry_price"] * 0.95:
-                    live_state["logs"].append(f"🛑 STOP LOSS triggered at ${current_price:.2f}")
-                    try:
-                        positions = r.get_open_stock_positions(account_number=JOINT_ACCT_NUM)
-                        for pos in positions:
-                            ins = r.get_instrument_by_url(pos['instrument'])
-                            if ins['symbol'] == symbol:
-                                r.order_sell_fractional_by_quantity(symbol, float(pos['quantity']), account_number=JOINT_ACCT_NUM)
-                        live_state["in_trade"] = False
-                        live_state["logs"].append(f"📉 SOLD all {symbol}")
-                    except Exception as e: live_state["logs"].append(f"❌ SELL FAILED: {str(e)}")
-                elif current_rsi > 55:
-                    live_state["logs"].append(f"💰 TAKE PROFIT triggered at ${current_price:.2f}")
-                    try:
-                        positions = r.get_open_stock_positions(account_number=JOINT_ACCT_NUM)
-                        for pos in positions:
-                            ins = r.get_instrument_by_url(pos['instrument'])
-                            if ins['symbol'] == symbol:
-                                r.order_sell_fractional_by_quantity(symbol, float(pos['quantity']), account_number=JOINT_ACCT_NUM)
-                        live_state["in_trade"] = False
-                        live_state["logs"].append(f"🤑 SOLD all {symbol}")
-                    except Exception as e: live_state["logs"].append(f"❌ SELL FAILED: {str(e)}")
+                # SELL LOGIC
+                # Day Mode: Tighter stops / Swing Mode: Looser stops
+                stop_pct = 0.995 if current_mode == 'day' else 0.95
+                profit_pct = 1.01 if current_mode == 'day' else 1.05
+                
+                # Force close check for Day Trading
+                is_end_of_day = False
+                if current_mode == 'day':
+                    if datetime.now().hour == 15 and datetime.now().minute >= 55:
+                        is_end_of_day = True
 
-            if len(live_state["logs"]) > 50: live_state["logs"] = live_state["logs"][-50:]
-            
-            # --- DYNAMIC SLEEP ---
+                if current_price < live_state["entry_price"] * stop_pct:
+                    reason = "Stop Loss"
+                elif current_price > live_state["entry_price"] * profit_pct:
+                    reason = "Take Profit"
+                elif is_end_of_day:
+                    reason = "EOD Force Close"
+                else:
+                    reason = None
+
+                if reason:
+                    try:
+                        # Find quantity to sell
+                        positions = r.get_open_stock_positions(account_number=JOINT_ACCT_NUM)
+                        for pos in positions:
+                            ins = r.get_instrument_by_url(pos['instrument'])
+                            if ins['symbol'] == symbol:
+                                r.order_sell_fractional_by_quantity(symbol, float(pos['quantity']), account_number=JOINT_ACCT_NUM)
+                        live_state["in_trade"] = False
+                        live_state["logs"].append(f"📉 SOLD ({reason}) @ ${current_price:.2f}")
+                    except Exception as e: live_state["logs"].append(f"❌ Sell Failed: {e}")
+
+            # E. SLEEP
             sleep_time = live_state.get("interval", 60)
-            live_state["status"] = f"Sleeping ({sleep_time}s) (Last: ${current_price:.2f})"
-            time.sleep(sleep_time) 
-            
+            live_state["last_update"] = f"${current_price:.2f} | RSI: {last_row['RSI']:.1f}"
+            time.sleep(sleep_time)
+
         except Exception as e:
-            live_state["logs"].append(f"⚠️ Loop Error: {str(e)}")
+            live_state["logs"].append(f"⚠️ Loop Error: {e}")
             time.sleep(60)
-    live_state["status"] = "Stopped"
 
 # --- DATA DOWNLOADER ---
 def download_fresh_data(symbol):
@@ -254,6 +267,7 @@ def home():
 def toggle_trading():
     action = request.json.get('action')
     ticker = request.json.get('ticker', 'INTC').upper()
+    mode = request.json.get('mode', 'swing') # <--- GET THE MODE
     
     try: amount = float(request.json.get('amount', 10.0))
     except: amount = 10.0
@@ -267,9 +281,14 @@ def toggle_trading():
         if not live_state["active"]:
             live_state["active"] = True
             live_state["ticker"] = ticker
+            live_state["mode"] = mode # <--- SAVE IT TO GLOBAL STATE
             live_state["trade_amount"] = amount
             live_state["interval"] = interval_sec
-            live_state["logs"].append(f"▶️ STARTING AI TRADER on {ticker} (${amount}, Every {interval_min}m)")
+            
+            # Log which mode we are starting
+            icon = "☀️" if mode == 'day' else "🌊"
+            live_state["logs"].append(f"▶️ STARTING {icon} {mode.upper()} TRADER on {ticker}")
+            
             t = threading.Thread(target=background_trader); t.daemon = True; t.start()
     else:
         live_state["active"] = False; live_state["logs"].append("🛑 STOPPING Bot...")
