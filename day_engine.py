@@ -2,7 +2,9 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import pandas_ta as ta
-from datetime import time, timedelta
+from datetime import time, datetime
+from sklearn.ensemble import RandomForestClassifier # <--- Added ML Library
+import joblib # <--- Added for saving brain
 from models import db, Trade, ModelDecision
 
 # --- SETTINGS ---
@@ -17,85 +19,53 @@ def download_intraday_data(ticker):
     print(f"📥 Fetching 60 days of 5-minute data for {ticker}...")
     try:
         df = yf.Ticker(ticker).history(period=PERIOD, interval=INTERVAL)
-        if df.empty:
-            print("❌ No data found.")
-            return None
+        if df.empty: return None
             
-        df.ffill(inplace=True)
-        df.bfill(inplace=True)
+        df.ffill(inplace=True); df.bfill(inplace=True)
         
-        # Calculate VWAP
+        # --- FEATURE ENGINEERING ---
+        # These are the inputs the "Brain" will learn from
         df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
         df['RSI'] = compute_rsi(df['Close'], 14)
+        df['SMA_20'] = ta.sma(df['Close'], length=20)
+        df['Dist_VWAP'] = (df['Close'] - df['VWAP']) / df['VWAP'] # How far are we from VWAP?
+        df['Volatility'] = df['Close'].pct_change().rolling(5).std() # Is the market crazy right now?
+        
+        # Create Target (Did price go up in the next 3 candles?)
+        df['Future_Return'] = df['Close'].shift(-3) / df['Close'] - 1
+        df['Target'] = (df['Future_Return'] > 0.001).astype(int) # Target: > 0.1% profit
         
         return df.dropna()
     except Exception as e:
-        print(f"Error downloading data: {e}")
+        print(f"Error: {e}")
         return None
-
-def execute_buy(ticker, price, time_val, rsi_val):
-    """ Creates a trade dictionary to track in memory """
-    # FIX 1: Ensure time_val is a standard python datetime, not Pandas Timestamp
-    if hasattr(time_val, 'to_pydatetime'):
-        entry_dt = time_val.to_pydatetime().replace(tzinfo=None)
-    else:
-        entry_dt = time_val
-
-    return {
-        "entry_time": entry_dt,
-        "entry_price": float(price),
-        "quantity": float(25000 / price),
-        "rsi_at_entry": float(rsi_val),
-        "status": "OPEN"
-    }
-
-def execute_sell(ticker, active_trade, exit_price, exit_time, reason):
-    """ Saves the completed trade to the Database """
-    try:
-        pnl = float((exit_price - active_trade['entry_price']) * active_trade['quantity'])
-        pnl_pct = float((exit_price - active_trade['entry_price']) / active_trade['entry_price'])
-
-        # FIX 2: Ensure exit_time is a standard python datetime without timezone
-        if hasattr(exit_time, 'to_pydatetime'):
-            exit_dt = exit_time.to_pydatetime().replace(tzinfo=None)
-        else:
-            exit_dt = exit_time
-
-        new_trade = Trade(
-            symbol=ticker,
-            mode='DAY_BACKTEST',
-            entry_time=active_trade['entry_time'], # Already fixed in execute_buy
-            entry_price=float(active_trade['entry_price']),
-            quantity=float(active_trade['quantity']),
-            direction="LONG",
-            exit_time=exit_dt, # Uses the fixed time
-            exit_price=float(exit_price),
-            pnl_dollar=pnl,
-            pnl_percent=pnl_pct,
-            exit_reason=reason
-        )
-        
-        decision = ModelDecision(
-            confidence_score=0.99,
-            model_version="v1_day_vwap",
-            rsi_at_entry=active_trade['rsi_at_entry'],
-            decision_type="RULE_BASED"
-        )
-        
-        new_trade.decision = decision
-        db.session.add(new_trade)
-        db.session.commit()
-        return True
-    except Exception as e:
-        print(f"❌ DB Error: {e}")
-        db.session.rollback()
-        return False
 
 def run_day_simulation(app, ticker):
     with app.app_context():
         df = download_intraday_data(ticker)
         if df is None: return {"error": "No data"}
 
+        # Define the Features for the AI
+        features = ['RSI', 'Dist_VWAP', 'Volatility', 'Volume']
+        
+        # --- TRAIN THE AI (Walk-Forward) ---
+        model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+        
+        # Split data: Train on first 70%, Test on last 30%
+        split = int(len(df) * 0.7)
+        train_df = df.iloc[:split]
+        test_df = df.iloc[split:]
+        
+        # Train
+        X_train = train_df[features]
+        y_train = train_df['Target']
+        model.fit(X_train, y_train)
+        print("🧠 Day Trading AI Trained!")
+
+        # --- SIMULATION ---
+        results = {"dates": [], "stock_price": [], "bot_balance": [], "logs": []}
+        capital = 25000.0
+        shares = 0
         in_trade = False
         active_trade = None
         
@@ -104,48 +74,68 @@ def run_day_simulation(app, ticker):
             db.session.commit()
         except: pass
 
-        results = {"dates": [], "stock_price": [], "bot_balance": [], "logs": []}
-        capital = 25000.0
+        print(f"☀️ Starting AI Day Trade Sim for {ticker}...")
 
-        print(f"☀️ Starting Day Trade Sim for {ticker}...")
-
-        for i in range(20, len(df)):
-            row = df.iloc[i]
+        # Run simulation on the TEST data (Unseen data)
+        for i in range(len(test_df)):
+            row = test_df.iloc[i]
             current_time = row.name.time()
-            current_price = row['Close']
-            current_rsi = row['RSI']
-            current_vwap = row['VWAP']
+            current_price = float(row['Close'])
             
+            # Prediction
+            feat_row = row[features].values.reshape(1, -1)
+            prob = model.predict_proba(feat_row)[0][1] # Confidence Score (0.0 to 1.0)
+
+            # 1. FORCE CLOSE
             if in_trade and current_time >= FORCE_CLOSE_TIME:
-                execute_sell(ticker, active_trade, current_price, row.name, "EOD Force Close")
-                capital += (current_price - active_trade['entry_price']) * active_trade['quantity']
+                pnl = (current_price - active_trade['entry_price']) * active_trade['quantity']
+                capital += pnl
                 in_trade = False
-                active_trade = None
                 results['logs'].append({"date": str(row.name), "msg": "Force Close", "type": "loss"})
                 continue
 
+            # 2. AI BUY LOGIC
             if not in_trade:
+                # Safe Hours + High AI Confidence (> 55%)
                 if time(10,0) < current_time < time(15,0):
-                    if current_price > current_vwap and current_rsi < 60:
-                        active_trade = execute_buy(ticker, current_price, row.name, current_rsi)
+                    if prob > 0.55: 
+                        shares = 25000 / current_price
+                        active_trade = {
+                            "entry_price": current_price,
+                            "quantity": shares,
+                            "entry_time": row.name.to_pydatetime()
+                        }
                         in_trade = True
-                        results['logs'].append({"date": str(row.name), "msg": f"BUY @ {current_price:.2f}", "type": "buy"})
+                        results['logs'].append({"date": str(row.name), "msg": f"AI BUY (Conf: {prob:.2f})", "type": "buy"})
 
+            # 3. EXIT LOGIC
             elif in_trade:
-                if current_price >= active_trade['entry_price'] * 1.015:
-                    execute_sell(ticker, active_trade, current_price, row.name, "Scalp Target")
-                    capital += (current_price - active_trade['entry_price']) * active_trade['quantity']
+                # Standard Scalp Exits
+                if current_price >= active_trade['entry_price'] * 1.01:
+                    pnl = (current_price - active_trade['entry_price']) * active_trade['quantity']
+                    capital += pnl
                     in_trade = False
-                    results['logs'].append({"date": str(row.name), "msg": f"PROFIT @ {current_price:.2f}", "type": "profit"})
-                
-                elif current_price <= active_trade['entry_price'] * 0.99:
-                    execute_sell(ticker, active_trade, current_price, row.name, "Stop Loss")
-                    capital += (current_price - active_trade['entry_price']) * active_trade['quantity']
+                    results['logs'].append({"date": str(row.name), "msg": "Profit Target", "type": "profit"})
+                elif current_price <= active_trade['entry_price'] * 0.995:
+                    pnl = (current_price - active_trade['entry_price']) * active_trade['quantity']
+                    capital += pnl
                     in_trade = False
-                    results['logs'].append({"date": str(row.name), "msg": f"STOP @ {current_price:.2f}", "type": "loss"})
-
+                    results['logs'].append({"date": str(row.name), "msg": "Stop Loss", "type": "loss"})
+            
+            # Record Data
             results['dates'].append(row.name.strftime('%Y-%m-%d %H:%M'))
-            results['stock_price'].append(float(current_price)) 
-            results['bot_balance'].append(float(capital))
+            results['stock_price'].append(current_price)
+            results['bot_balance'].append(capital)
+
+        # --- SAVE THE BRAIN ---
+        # We save it as 'day_brain.pkl' so it doesn't overwrite the swing brain
+        brain_package = {
+            "model": model,
+            "features": features,
+            "ticker": ticker,
+            "type": "DAY_TRADING_5M"
+        }
+        joblib.dump(brain_package, "day_brain.pkl")
+        print("💾 Day Trading Brain Saved to 'day_brain.pkl'")
 
         return results
