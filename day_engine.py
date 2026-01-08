@@ -48,17 +48,18 @@ def download_intraday_data(ticker):
         print(f"Error: {e}")
         return None
 
+# ... inside day_engine.py ...
+
 def run_day_simulation(app, ticker):
     with app.app_context():
         df = download_intraday_data(ticker)
         if df is None: return {"error": "No data"}
 
-        print("🗳️ Polling the Council of Strategies (This takes a moment)...")
+        print("🗳️ Polling the Council of Strategies...")
 
         # 1. BUILD VOTE DATASET
         vote_history = []
         valid_indices = []
-
         for i in range(50, len(df)):
             market_slice = df.iloc[:i+1]
             votes = strategies.get_council_votes(market_slice)
@@ -70,8 +71,11 @@ def run_day_simulation(app, ticker):
 
         X_full = pd.DataFrame(vote_history, index=valid_indices)
         y_full = df.loc[valid_indices, 'Target']
+        
+        # --- FIX: DEFINE FEATURES HERE ---
         features = list(X_full.columns)
-
+        # ---------------------------------
+        
         # 2. TRAIN MANAGER
         split = int(len(X_full) * 0.7)
         X_train = X_full.iloc[:split]
@@ -80,7 +84,6 @@ def run_day_simulation(app, ticker):
         
         model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
         model.fit(X_train, y_train)
-        print("🧠 Council Manager Trained!")
 
         # 3. RUN SIMULATION
         results = {"dates": [], "stock_price": [], "bot_balance": [], "logs": []}
@@ -93,10 +96,9 @@ def run_day_simulation(app, ticker):
         try:
             Trade.query.filter_by(symbol=ticker, mode='DAY_COUNCIL').delete()
             db.session.commit()
-        except: 
-            db.session.rollback()
+        except: db.session.rollback()
 
-        print(f"☀️ Starting Council-Managed Sim for {ticker}...")
+        print(f"☀️ Starting Sim for {ticker}...")
 
         for i in range(len(X_test)):
             current_votes = X_test.iloc[i]
@@ -105,13 +107,6 @@ def run_day_simulation(app, ticker):
             
             feat_row = current_votes.values.reshape(1, -1)
             prob = model.predict_proba(feat_row)[0][1]
-
-            # Log Strings
-            rsi_e = get_vote_emoji(current_votes['RSI_Vote'])
-            break_e = get_vote_emoji(current_votes['Breakout_Vote'])
-            heik_e = get_vote_emoji(current_votes['Heikin_Vote'])
-            macd_e = get_vote_emoji(current_votes['MACD_Vote']) 
-            council_log = f"🗳️ COUNCIL: RSI: {rsi_e} | Breakout: {break_e} | Heikin: {heik_e} | MACD: {macd_e}"
 
             # --- DECISION LOGIC ---
             if not in_trade:
@@ -131,15 +126,13 @@ def run_day_simulation(app, ticker):
                         }
                     }
                     in_trade = True
-                    results['logs'].append({"date": str(current_votes.name), "msg": f"{council_log} \n 🚀 AI BUY (Conf: {prob:.2f})", "type": "buy"})
+                    
+                    msg = f"BUY @ ${current_price:.2f} (Conf: {prob:.2f})"
+                    results['logs'].append({"date": str(current_votes.name), "msg": msg, "type": "buy"})
                 
                 # HOLD SIGNAL
                 else:
                     if prob > 0.40: 
-                        msg = f"{council_log} \n 🛡️ DECISION: HOLD (Confidence {prob:.2f} too low)"
-                        results['logs'].append({"date": str(current_votes.name), "msg": msg, "type": "info"})
-                        
-                        # SAVE HOLD TO DB
                         votes_row = StrategyVote(
                             vote_rsi=int(current_votes['RSI_Vote']),
                             vote_breakout=int(current_votes['Breakout_Vote']),
@@ -152,17 +145,13 @@ def run_day_simulation(app, ticker):
                             decision_type="HOLD",
                             symbol=ticker,
                             rsi_at_entry=float(current_votes['Raw_RSI']),
-                            features_used="Council Votes: RSI, Breakout, Heikin, MACD"
+                            features_used="Council Votes"
                         )
                         decision.votes = votes_row 
-                        
-                        # --- SAFE COMMIT ---
                         try:
                             db.session.add(decision)
                             db.session.commit()
-                        except Exception as e:
-                            print(f"⚠️ DB Warning (Hold): {e}")
-                            db.session.rollback()
+                        except: db.session.rollback()
 
             # EXIT LOGIC
             elif in_trade:
@@ -170,11 +159,11 @@ def run_day_simulation(app, ticker):
                 reason = ""
                 
                 if current_price >= active_trade['entry_price'] * 1.01:
-                    should_sell = True; reason = "Profit Target"
+                    should_sell = True; reason = "TAKE PROFIT"
                 elif current_price <= active_trade['entry_price'] * 0.995:
-                    should_sell = True; reason = "Stop Loss"
+                    should_sell = True; reason = "STOP LOSS"
                 elif current_time >= FORCE_CLOSE_TIME:
-                    should_sell = True; reason = "Force Close"
+                    should_sell = True; reason = "FORCE CLOSE"
                 
                 if should_sell:
                     pnl = (current_price - active_trade['entry_price']) * active_trade['quantity']
@@ -182,58 +171,42 @@ def run_day_simulation(app, ticker):
                     capital += pnl
                     
                     new_trade = Trade(
-                        symbol=ticker,
-                        mode='DAY_COUNCIL',
-                        entry_time=active_trade['entry_time'],
-                        entry_price=float(active_trade['entry_price']),
-                        quantity=float(active_trade['quantity']),
-                        direction="LONG",
-                        exit_time=current_votes.name.to_pydatetime(),
-                        exit_price=float(current_price),
-                        pnl_dollar=float(pnl),
-                        pnl_percent=float(pnl_pct),
-                        exit_reason=reason
+                        symbol=ticker, mode='DAY_COUNCIL',
+                        entry_time=active_trade['entry_time'], entry_price=float(active_trade['entry_price']),
+                        quantity=float(active_trade['quantity']), direction="LONG",
+                        exit_time=current_votes.name.to_pydatetime(), exit_price=float(current_price),
+                        pnl_dollar=float(pnl), pnl_percent=float(pnl_pct), exit_reason=reason
                     )
-                    
                     decision = ModelDecision(
                         confidence_score=float(active_trade['confidence']),
-                        model_version="v2_council", 
-                        decision_type="AI_ENSEMBLE",
-                        symbol=ticker,
+                        model_version="v2_council", decision_type="AI_ENSEMBLE", symbol=ticker,
                         rsi_at_entry=float(active_trade['votes']['rsi']),
-                        features_used="Council Votes: RSI, Breakout, Heikin, MACD"
+                        features_used="Council Votes"
                     )
-                    
-                    votes_row = StrategyVote(
+                    decision.votes = StrategyVote(
                         vote_rsi=int(active_trade['votes']['rsi']),
                         vote_breakout=int(active_trade['votes']['breakout']),
                         vote_heikin=int(active_trade['votes']['heikin']),
                         vote_fib=int(active_trade['votes']['macd']) 
                     )
-                    
-                    decision.votes = votes_row 
                     new_trade.decision = decision 
-                    
-                    # --- SAFE COMMIT ---
                     try:
                         db.session.add(new_trade)
                         db.session.commit()
-                    except Exception as e:
-                        print(f"⚠️ DB Warning (Trade): {e}")
-                        db.session.rollback()
+                    except: db.session.rollback()
                     
                     in_trade = False
                     log_type = "profit" if pnl > 0 else "loss"
-                    results['logs'].append({"date": str(current_votes.name), "msg": reason, "type": log_type})
+                    
+                    msg = f"{reason} @ ${current_price:.2f}"
+                    results['logs'].append({"date": str(current_votes.name), "msg": msg, "type": log_type})
 
             results['dates'].append(current_votes.name.strftime('%Y-%m-%d %H:%M'))
             results['stock_price'].append(current_price)
             results['bot_balance'].append(capital)
         
         # Save Brain
-        brain_package = {
-            "model": model, "features": features, "ticker": ticker, "type": "COUNCIL_MANAGER_5M"
-        }
+        brain_package = {"model": model, "features": features, "ticker": ticker, "type": "COUNCIL_MANAGER_5M"}
         joblib.dump(brain_package, "day_brain.pkl")
 
         return results

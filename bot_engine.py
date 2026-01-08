@@ -44,6 +44,7 @@ def get_simulation_data(app, ticker, file_path):
             db.session.commit()
         except Exception as e:
             print(f"⚠️ Warning: Database clean failed: {e}")
+            db.session.rollback()
 
         # --- 3. Walk-Forward Loop ---
         capital = 10000.0
@@ -88,7 +89,6 @@ def get_simulation_data(app, ticker, file_path):
                             capital = 0
                             in_trade = True
                             
-                            # FIX: Convert everything to standard python float()
                             active_trade = {
                                 "entry_time": current_date,
                                 "entry_price": float(price),
@@ -121,7 +121,6 @@ def get_simulation_data(app, ticker, file_path):
                     in_trade = False
                     
                     try:
-                        # FIX: Explicit floats for PnL calculations
                         pnl = float((price - active_trade['entry_price']) * active_trade['quantity'])
                         pnl_pct = float((price - active_trade['entry_price']) / active_trade['entry_price'])
                         
@@ -139,15 +138,16 @@ def get_simulation_data(app, ticker, file_path):
                             exit_reason=reason
                         )
                         
+                        # --- UPDATED MODEL DECISION ---
                         decision = ModelDecision(
                             confidence_score=float(active_trade['confidence']),
                             model_version="v2_walk_forward",
                             
-                            # --- NEW FIELDS (Required for new DB) ---
-                            symbol=ticker,              # <--- ADD THIS
-                            decision_type="AI_SWING",   # <--- ADD THIS
+                            # --- NEW REQUIRED FIELDS ---
+                            symbol=ticker,              # <--- Was missing
+                            decision_type="AI_SWING",   # <--- Was missing
                             
-                            # --- EXISTING FIELDS (Keep these) ---
+                            # --- EXISTING FIELDS ---
                             rsi_at_entry=float(active_trade['rsi']),
                             sma50_at_entry=float(active_trade['sma50']),
                             sma200_at_entry=float(active_trade['sma200']),
@@ -160,7 +160,7 @@ def get_simulation_data(app, ticker, file_path):
                         db.session.commit()
                     except Exception as e:
                         print(f"❌ DB Error: {e}")
-                        db.session.rollback()
+                        db.session.rollback() # <--- Prevents future crashes
 
             current_val = capital + (shares * price)
             results['dates'].append(date_str)

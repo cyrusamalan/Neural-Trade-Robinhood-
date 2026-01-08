@@ -3,386 +3,243 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neural Trade Dashboard</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>Neural Trade Robinhood</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
     <style>
-        body { background-color: #121212; color: #e0e0e0; font-family: 'Courier New', monospace; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .terminal-logs {
+            font-family: 'Courier New', monospace;
+            background: #1e293b;
+            padding: 15px;
+            border-radius: 8px;
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #334155;
+            font-size: 0.9rem;
+        }
+        .log-entry { margin-bottom: 4px; display: flex; }
+        .log-date { color: #94a3b8; margin-right: 10px; min-width: 140px; }
         
-        .panel { background: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333; }
-        .row { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
-        
-        label { font-size: 12px; color: #888; display: block; margin-bottom: 5px; }
-        input { background: #333; border: 1px solid #555; color: white; padding: 8px; border-radius: 4px; }
-        
-        /* Fixed Disabled Style */
-        input:disabled { background: #222; color: #555 !important; border-color: #444; cursor: not-allowed; } 
-        
-        button { background: #333; border: 1px solid #555; color: white; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
-        button:hover { background: #444; }
-        button.primary { background: #00e676; border: none; color: black; }
-        button.danger { background: #ff3d00; border: none; color: black; }
-        button.secondary { background: #444; border: 1px solid #666; color: white; }
-        
-        .balance-card { background: #263238; padding: 10px 20px; border-radius: 4px; border: 1px solid #37474f; min-width: 150px; }
-        .balance-val { font-size: 20px; font-weight: bold; color: #00e676; }
-
-        .log-box { background: #000; padding: 10px; height: 300px; overflow-y: auto; border: 1px solid #333; font-size: 12px; font-family: monospace; }
-        .log-entry { border-bottom: 1px solid #222; padding: 4px 0; }
-        
-        /* --- NEW COLORS --- */
-        .log-buy { color: #29b6f6; }   /* Blue for Buys (Easier to distinguish) */
-        .log-profit { color: #00e676; font-weight: bold; } /* Green for Profit */
-        .log-loss { color: #ff3d00; font-weight: bold; }   /* Red for Loss */
-        /* ------------------ */
-        
-        .live-indicator { height: 10px; width: 10px; background: #555; border-radius: 50%; display: inline-block; margin-right: 5px; }
-        .live-active { background: #00e676; box-shadow: 0 0 10px #00e676; }
+        /* Log Colors */
+        .log-buy { color: #4ade80; font-weight: bold; }   /* Green */
+        .log-profit { color: #38bdf8; font-weight: bold; } /* Blue */
+        .log-loss { color: #f87171; font-weight: bold; }   /* Red */
+        .log-force { color: #fbbf24; font-weight: bold; }  /* Amber */
     </style>
 </head>
-<body>
+<body class="p-6">
 
-<div class="container">
-    <h1>🤖 Neural Trade Station</h1>
+    <div class="flex justify-between items-center mb-8">
+        <div>
+            <h1 class="text-3xl font-bold text-blue-400">🧠 Neural Trade Dashboard</h1>
+            <p class="text-gray-400 text-sm">Robinhood API • Random Forest • Council of Strategies</p>
+        </div>
+        <div class="text-right">
+            <div id="connection-status" class="bg-gray-800 px-4 py-2 rounded-lg border border-gray-700">
+                <span class="text-xs text-gray-500 uppercase">Token Status</span>
+                <div class="font-bold text-green-400">{{ token_status }}</div>
+            </div>
+        </div>
+    </div>
 
-    <div class="panel">
-        <div class="row">
-            <div>
-                <label>Token</label>
-                <div style="display:flex; gap:10px;">
-                    <input type="password" id="tokenInput" placeholder="Bearer eyJ...">
-                    <button onclick="saveToken()">Save</button>
+    <div class="grid grid-cols-12 gap-6">
+        
+        <div class="col-span-3 space-y-4">
+            <div class="bg-slate-800 p-4 rounded-lg border border-slate-700">
+                <h3 class="font-bold text-gray-300 mb-2">Strategy Mode</h3>
+                <select id="sim-mode" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
+                    <option value="swing">🌊 Swing Trading (Daily)</option>
+                    <option value="day">☀️ Day Trading (5-Min)</option>
+                </select>
+            </div>
+
+            <div class="bg-slate-800 p-4 rounded-lg border border-slate-700">
+                <label class="block text-sm text-gray-400 mb-1">Ticker</label>
+                <input type="text" id="ticker-input" value="INTC" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white font-mono uppercase">
+            </div>
+
+            <button onclick="runSimulation()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg transition">
+                🔬 Run Simulation
+            </button>
+
+            <div id="balance-box" class="hidden bg-slate-900 p-4 rounded-lg border mt-4 text-center transition-colors">
+                <div class="text-gray-400 text-xs uppercase">Final Balance</div>
+                <div id="final-balance-display" class="text-2xl font-bold">---</div>
+                <div id="final-pct-display" class="text-sm font-bold">---</div>
+            </div>
+        </div>
+
+        <div class="col-span-9 bg-slate-800 rounded-lg border border-slate-700 p-1">
+            <div id="chart" class="w-full h-[400px]"></div>
+        </div>
+
+        <div class="col-span-12">
+            <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+                <h3 class="text-sm font-bold text-gray-400 mb-2 uppercase tracking-wider">Trade Log (Last 15)</h3>
+                <div id="log-container" class="terminal-logs">
+                    <div class="text-gray-500 italic">Waiting for simulation...</div>
                 </div>
             </div>
-            <div class="balance-card">
-                <label>Joint Cash</label>
-                <div id="balanceDisplay" class="balance-val">---</div>
-                <button onclick="checkBalance()" style="font-size:10px; padding:2px 8px; margin-top:5px;">Refresh</button>
-            </div>
-            <div>
-                <label>Target Stock</label>
-                <div style="display: flex; gap: 5px;">
-                    <input type="text" id="tickerInput" value="INTC" style="width: 80px; text-align: center;">
-                    <button class="secondary" onclick="updateDataset()" title="Download Training Data" style="padding: 0 12px;">⬇️</button>
-                </div>
-            </div>
-            <div>
-                <label>Trade Amount ($)</label>
-                <input type="number" id="tradeAmount" value="10" style="width: 80px; text-align: center; color: #00e676; font-weight: bold;">
-            </div>
-            <div>
-                <label>Check Interval (min)</label>
-                <input type="number" id="tradeInterval" value="1" min="1" style="width: 80px; text-align: center;">
-            </div>
         </div>
+
     </div>
 
-    <div class="panel" style="border: 1px solid #00e676;">
-        <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 15px;">
-            <h2 style="margin:0;"><span id="liveDot" class="live-indicator"></span> Live Trader</h2>
-            <div>
-                <button id="startBtn" class="primary" onclick="toggleTrading('start')">▶️ START LIVE TRADING</button>
-                <button id="stopBtn" class="danger" onclick="toggleTrading('stop')" style="display:none;">⏹ STOP BOT</button>
-            </div>
-        </div>
-        
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-            <div>
-                <label>Status</label>
-                <label>Active Mode</label>
-                <div id="activeModeDisplay" style="font-size: 14px; font-weight: bold; color: #29b6f6;">---</div>
-                
-                <div id="botStatus" style="font-size: 14px; color: #aaa; margin-bottom: 10px;">Idle</div>
-                <label>Last Check</label>
-                <div id="lastCheck" style="font-size: 18px; color: white;">---</div>
-            </div>
-            <div>
-                <label>Live Logs</label>
-                <div class="log-box" id="liveLogs"></div>
-            </div>
-        </div>
-    </div>
+    <script>
+        async function runSimulation() {
+            const ticker = document.getElementById('ticker-input').value;
+            const mode = document.getElementById('sim-mode').value;
+            const logBox = document.getElementById('log-container');
+            const balBox = document.getElementById('balance-box');
 
-    <div class="panel">
-        <div style="display: flex; align-items: center; justify-content: space-between;">
-            <h2>🔬 Backtest Simulation <span id="simResult" style="font-size: 18px; margin-left: 15px;"></span></h2>
-        </div>
-        
-        <div class="form-check form-switch mb-3">
-            <input class="form-check-input" type="checkbox" id="dayModeSwitch">
-            <label class="form-check-label" for="dayModeSwitch">
-                ☀️ Enable Day Trading Mode (5m Candles)
-            </label>
-        </div>
-        <button onclick="runSim()" class="btn btn-primary w-100">Run Simulation</button>
+            logBox.innerHTML = '<div class="text-blue-400 animate-pulse">Running Simulation... this may take a moment.</div>';
 
-        <div id="simResults" class="mt-3"></div>
-        <div class="log-box" id="simLogs" style="height: 150px; margin-top: 10px; border-color: #444;"></div>
-    </div>
-</div>
+            try {
+                const response = await fetch('/run_sim', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker: ticker, mode: mode })
+                });
 
-<script>
-    let poller = null;
-    let myChart = null; // Store the chart instance
-
-    // --- DATA MANAGEMENT ---
-    async function updateDataset() {
-        const ticker = document.getElementById('tickerInput').value;
-        const logBox = document.getElementById('simLogs'); 
-        logBox.innerHTML = `<div class="log-entry">⏳ Downloading fresh data for ${ticker}...</div>`;
-        
-        try {
-            const res = await fetch('/update_dataset', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ ticker: ticker })
-            });
-            const data = await res.json();
-            
-            if(data.success) {
-                const rowCount = (data.rows !== undefined) ? data.rows : 0;
-                const period = data.period_used || "unknown";
-                logBox.innerHTML += `<div class="log-entry log-buy">✅ Success! Downloaded ${rowCount} rows (${period}).</div>`;
-                alert(`Data for ${ticker} downloaded successfully!`);
-            } else {
-                logBox.innerHTML += `<div class="log-entry log-loss">❌ Error: ${data.msg || data.error}</div>`;
-            }
-        } catch (e) {
-            logBox.innerHTML += `<div class="log-entry log-loss">❌ Network Error: ${e}</div>`;
-        }
-    }
-
-    // --- LIVE TRADING FUNCTIONS ---
-    async function toggleTrading(action) {
-        const ticker = document.getElementById('tickerInput').value;
-        const amount = document.getElementById('tradeAmount').value;
-        const interval = document.getElementById('tradeInterval').value;
-
-        const isDayMode = document.getElementById('dayModeSwitch').checked;
-        const mode = isDayMode ? 'day' : 'swing';
-        
-        const res = await fetch('/toggle_trading', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ 
-                action: action, 
-                ticker: ticker,
-                amount: amount,
-                interval: interval,
-                mode: mode
-            })
-        });
-        const data = await res.json();
-        updateUI(data.active);
-    }
-
-    async function updateStatus() {
-        const res = await fetch('/get_live_status');
-        const state = await res.json();
-        
-        updateUI(state.active);
-        document.getElementById('botStatus').innerText = state.status;
-        if(state.last_update) document.getElementById('lastCheck').innerText = state.last_update;
-
-        const logBox = document.getElementById('liveLogs');
-        logBox.innerHTML = '';
-        state.logs.forEach(msg => {
-            logBox.innerHTML += `<div class="log-entry">${msg}</div>`;
-        });
-        logBox.scrollTop = logBox.scrollHeight;
-    }
-
-    function updateUI(active) {
-        const inputs = [
-            document.getElementById('tickerInput'),
-            document.getElementById('tradeAmount'),
-            document.getElementById('tradeInterval')
-        ];
-
-        if(active) {
-            document.getElementById('startBtn').style.display = 'none';
-            document.getElementById('stopBtn').style.display = 'inline-block';
-            document.getElementById('liveDot').classList.add('live-active');
-            inputs.forEach(input => input.disabled = true);
-            if(!poller) poller = setInterval(updateStatus, 5000); 
-        } else {
-            document.getElementById('startBtn').style.display = 'inline-block';
-            document.getElementById('stopBtn').style.display = 'none';
-            document.getElementById('liveDot').classList.remove('live-active');
-            inputs.forEach(input => input.disabled = false);
-            if(poller) { clearInterval(poller); poller = null; }
-        }
-    }
-
-    // --- HELPERS ---
-    async function checkBalance() {
-        try {
-            const res = await fetch('/get_balance');
-            const data = await res.json();
-            if(data.success) document.getElementById('balanceDisplay').innerText = "$" + data.cash.toFixed(2);
-        } catch(e) {}
-    }
-
-    async function saveToken() {
-        const token = document.getElementById('tokenInput').value;
-        await fetch('/save_token', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ token: token })
-        });
-        checkBalance();
-        alert("Token Saved");
-    }
-
-    // --- SIMULATION FUNCTIONS ---
-    async function runSim() {
-        const ticker = document.getElementById('tickerInput').value;
-        const isDayMode = document.getElementById('dayModeSwitch').checked;
-        const selectedMode = isDayMode ? 'day' : 'swing';
-
-        const resultsDiv = document.getElementById('simResults');
-        resultsDiv.innerHTML = `<div class="text-center"><div class="spinner-border text-primary" role="status"></div><br>Running ${selectedMode} simulation...</div>`;
-
-        try {
-            const response = await fetch('/run_sim', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ticker: ticker, mode: selectedMode })
-            });
-            
-            const data = await response.json();
-
-            if (data.error) {
-                resultsDiv.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
-                return;
-            }
-
-            // 1. RENDER THE CHART
-            renderChart(data);
-
-            // 2. RENDER THE LOGS
-            let logsHtml = '<h5 class="mt-4">Trade Log (Last 15):</h5><ul class="list-group list-group-flush small">';
-            const logs = data.logs || [];
-            
-            // Show last 15 logs
-            logs.slice(-15).forEach(log => {
-                let color = 'text-secondary';
-                if(log.type === 'profit') color = 'text-success fw-bold';
-                if(log.type === 'loss') color = 'text-danger fw-bold';
-                if(log.type === 'buy') color = 'text-primary';
-                
-                logsHtml += `<li class="list-group-item d-flex justify-content-between align-items-center">
-                    <span>${log.date}</span>
-                    <span class="${color}">${log.msg}</span>
-                </li>`;
-            });
-            
-            // 3. CALCULATE AND DISPLAY PERCENTAGE
-            if (data.bot_balance && data.bot_balance.length > 0) {
-                const finalBal = data.bot_balance[data.bot_balance.length - 1];
-                
-                // Determine starting cash based on mode
-                const startBal = selectedMode === 'day' ? 25000 : 10000;
-                
-                // Calculate PnL
-                const pnl = finalBal - startBal;
-                const pnlPct = (pnl / startBal) * 100;
-                
-                // Set Color (Green for +, Red for -)
-                const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
-                const sign = pnl >= 0 ? '+' : ''; 
-
-                logsHtml += `<li class="list-group-item bg-light fw-bold mt-2 d-flex justify-content-between">
-                    <span>Final Balance:</span>
-                    <span>
-                        $${finalBal.toFixed(2)} 
-                        <span class="${pnlColor} ms-2">(${sign}${pnlPct.toFixed(2)}%)</span>
-                    </span>
-                </li>`;
-            }
-
-            logsHtml += '</ul>';
-            resultsDiv.innerHTML = logsHtml;
-
-        } catch (err) {
-            resultsDiv.innerHTML = `<div class="alert alert-danger">System Error: ${err}</div>`;
-        }
-    }
-
-    function renderChart(data) {
-        // If a chart already exists, destroy it so we don't draw over it
-        if (myChart) {
-            myChart.destroy();
-        }
-
-        // Create a canvas element if it doesn't exist
-        let canvas = document.getElementById('tradeChart');
-        if (!canvas) {
-            const chartContainer = document.createElement('div');
-            chartContainer.style.height = '400px'; 
-            chartContainer.innerHTML = '<canvas id="tradeChart"></canvas>';
-            
-            // Insert chart BEFORE the logs
-            const resultsDiv = document.getElementById('simResults');
-            resultsDiv.parentNode.insertBefore(chartContainer, resultsDiv);
-            canvas = document.getElementById('tradeChart');
-        }
-
-        const ctx = canvas.getContext('2d');
-        
-        myChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: data.dates,
-                datasets: [
-                    {
-                        label: 'Bot Balance ($)',
-                        data: data.bot_balance,
-                        borderColor: '#0d6efd', // Blue
-                        backgroundColor: 'rgba(13, 110, 253, 0.1)',
-                        borderWidth: 1,
-                        yAxisID: 'y',
-                        tension: 0.1,
-                        fill: true,
-                        pointRadius: 0
-                    },
-                    {
-                        label: 'Stock Price ($)',
-                        data: data.stock_price,
-                        borderColor: '#6c757d', // Grey
-                        borderDash: [5, 5],
-                        yAxisID: 'y1',
-                        pointRadius: 0, 
-                        borderWidth: 1
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: {
-                    mode: 'index',
-                    intersect: false,
-                },
-                scales: {
-                    y: {
-                        type: 'linear',
-                        display: true,
-                        position: 'left',
-                        title: { display: true, text: 'Account Value' }
-                    },
-                    y1: {
-                        type: 'linear',
-                        display: true,
-                        position: 'right',
-                        grid: { drawOnChartArea: false },
-                        title: { display: true, text: 'Stock Price' }
-                    }
+                const data = await response.json();
+                if (data.error) {
+                    logBox.innerHTML = `<div class="text-red-500">Error: ${data.error}</div>`;
+                    return;
                 }
+
+                // Render components with new data
+                renderLogs(data.logs);
+                renderBalance(data.bot_balance);
+                renderChart(data); // Pass full data to chart for color logic
+
+            } catch (e) {
+                logBox.innerHTML = `<div class="text-red-500">Network Error: ${e}</div>`;
             }
-        });
-    }
+        }
 
-    checkBalance();
-</script>
+        function renderLogs(logs) {
+            const container = document.getElementById('log-container');
+            container.innerHTML = "";
 
+            // 1. Filter: Only show Trades (Buy/Profit/Loss/Force)
+            const tradeLogs = logs.filter(l => ['buy', 'profit', 'loss', 'force'].includes(l.type));
+
+            // 2. Slice: Get only the last 15
+            const last15 = tradeLogs.slice(-15);
+
+            last15.forEach(log => {
+                const row = document.createElement('div');
+                row.className = "log-entry";
+                
+                // Color Logic
+                let typeClass = "text-gray-300";
+                if(log.type === 'buy') typeClass = "log-buy";
+                if(log.type === 'profit') typeClass = "log-profit";
+                if(log.type === 'loss') typeClass = "log-loss";
+                if(log.type === 'force') typeClass = "log-force";
+
+                row.innerHTML = `
+                    <span class="log-date">${log.date}</span>
+                    <span class="${typeClass}">${log.msg}</span>
+                `;
+                container.appendChild(row);
+            });
+
+            // System Message
+            const sysRow = document.createElement('div');
+            sysRow.className = "mt-4 text-purple-400 font-bold border-t border-gray-700 pt-2";
+            sysRow.innerText = "SYSTEM 🧠 Final Brain Saved for Live Trading";
+            container.appendChild(sysRow);
+        }
+
+        function renderBalance(balances) {
+            if(!balances || balances.length === 0) return;
+            const finalBal = balances[balances.length - 1];
+            const startBal = balances[0] || 25000; 
+            const pct = ((finalBal - startBal) / startBal) * 100;
+
+            const balEl = document.getElementById('final-balance-display');
+            const pctEl = document.getElementById('final-pct-display');
+            const boxEl = document.getElementById('balance-box');
+
+            // --- COLOR LOGIC ---
+            if (pct >= 0) {
+                // PROFIT: Green Text, Dark Green Border
+                balEl.className = "text-2xl font-bold text-green-400";
+                pctEl.className = "text-sm font-bold text-green-600";
+                boxEl.className = "bg-slate-900 p-4 rounded-lg border border-green-900 mt-4 text-center";
+                pctEl.innerText = `(+${pct.toFixed(2)}%)`;
+            } else {
+                // LOSS: Red Text, Dark Red Border
+                balEl.className = "text-2xl font-bold text-red-500";
+                pctEl.className = "text-sm font-bold text-red-700";
+                boxEl.className = "bg-slate-900 p-4 rounded-lg border border-red-900 mt-4 text-center";
+                pctEl.innerText = `(${pct.toFixed(2)}%)`;
+            }
+
+            balEl.innerText = `$${finalBal.toFixed(2)}`;
+            boxEl.classList.remove('hidden');
+        }
+
+        function renderChart(data) {
+            const startBalance = data.bot_balance[0] || 25000;
+            const finalBalance = data.bot_balance[data.bot_balance.length - 1];
+            
+            // If Final Balance is Profit -> Green Line
+            // If Final Balance is Loss -> Red Line
+            const isProfit = finalBalance >= startBalance;
+            const mainLineColor = isProfit ? '#10b981' : '#ef4444'; 
+
+            const trace1 = {
+                x: data.dates,
+                y: data.stock_price,
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Price',
+                line: { color: '#64748b', width: 1 }
+            };
+
+            const trace2 = {
+                x: data.dates,
+                y: data.bot_balance,
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Balance',
+                yaxis: 'y2',
+                // Dynamic Color applied here
+                line: { color: mainLineColor, width: 2 }
+            };
+
+            const layout = {
+                paper_bgcolor: '#1e293b',
+                plot_bgcolor: '#1e293b',
+                font: { color: '#94a3b8' },
+                margin: { t: 30, b: 30, l: 40, r: 40 },
+                xaxis: { showgrid: false },
+                yaxis: { showgrid: true, gridcolor: '#334155' },
+                yaxis2: {
+                    title: 'Balance',
+                    overlaying: 'y',
+                    side: 'right',
+                    showgrid: false
+                },
+                showlegend: true,
+                legend: { x: 0, y: 1 },
+                // Add a "Break Even" dashed line
+                shapes: [{
+                    type: 'line',
+                    xref: 'paper', x0: 0, x1: 1,
+                    yref: 'y2', y0: startBalance, y1: startBalance,
+                    line: {
+                        color: '#94a3b8',
+                        width: 1,
+                        dash: 'dot'
+                    }
+                }]
+            };
+
+            Plotly.newPlot('chart', [trace1, trace2], layout);
+        }
+    </script>
 </body>
 </html>
