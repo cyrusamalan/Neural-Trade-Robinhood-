@@ -1,8 +1,11 @@
 import pandas as pd
 import numpy as np
+import yfinance as yf
+import pandas_ta as ta
 from sklearn.ensemble import RandomForestClassifier
 import joblib
 import warnings
+import os
 from datetime import datetime
 from models import db, Trade, ModelDecision 
 
@@ -20,7 +23,7 @@ def get_simulation_data(app, ticker, file_path):
         try:
             df = pd.read_csv(file_path, parse_dates=['Date'], index_col='Date')
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": f"Could not read data: {e}"}
 
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.fillna(method='ffill', inplace=True)
@@ -39,7 +42,7 @@ def get_simulation_data(app, ticker, file_path):
 
         # --- 2. Database Prep ---
         try:
-            print(f"🧹 Clearing old backtest records for {ticker}...")
+            # print(f"🧹 Clearing old backtest records for {ticker}...")
             Trade.query.filter_by(symbol=ticker, mode='BACKTEST').delete()
             db.session.commit()
         except Exception as e:
@@ -138,16 +141,11 @@ def get_simulation_data(app, ticker, file_path):
                             exit_reason=reason
                         )
                         
-                        # --- UPDATED MODEL DECISION ---
                         decision = ModelDecision(
                             confidence_score=float(active_trade['confidence']),
                             model_version="v2_walk_forward",
-                            
-                            # --- NEW REQUIRED FIELDS ---
-                            symbol=ticker,              # <--- Was missing
-                            decision_type="AI_SWING",   # <--- Was missing
-                            
-                            # --- EXISTING FIELDS ---
+                            symbol=ticker,
+                            decision_type="AI_SWING",
                             rsi_at_entry=float(active_trade['rsi']),
                             sma50_at_entry=float(active_trade['sma50']),
                             sma200_at_entry=float(active_trade['sma200']),
@@ -160,7 +158,7 @@ def get_simulation_data(app, ticker, file_path):
                         db.session.commit()
                     except Exception as e:
                         print(f"❌ DB Error: {e}")
-                        db.session.rollback() # <--- Prevents future crashes
+                        db.session.rollback()
 
             current_val = capital + (shares * price)
             results['dates'].append(date_str)
@@ -183,3 +181,50 @@ def get_simulation_data(app, ticker, file_path):
             results['logs'].append({"date": "SYSTEM", "msg": f"🧠 Final Brain Saved for Live Trading", "type": "profit"})
 
         return results
+
+# --- DATA DOWNLOADER (Required for app.py) ---
+def download_fresh_data(symbol):
+    print(f"\n📥 Manager: Downloading history for {symbol}...")
+    DATA_DIR = "datasets"  
+    if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
+    
+    period = "730d"
+    try:
+        df = yf.Ticker(symbol).history(period=period, interval="1h")
+        if df.empty: return {"success": False, "error": f"Yahoo has no data for {symbol}."}
+        
+        df.index = df.index.tz_localize(None); df.index.name = 'Date'
+        
+        try:
+            spy = yf.Ticker("SPY").history(period=period, interval="1h")['Close']
+            vix = yf.Ticker("^VIX").history(period=period, interval="1h")['Close']
+            tnx = yf.Ticker("^TNX").history(period="59d", interval="1h")['Close']
+            df['SP500_Close'] = spy; df['VIX_Close'] = vix; df['10Y_Yield'] = tnx
+            df = df.ffill().bfill().fillna(0)
+        except: pass
+
+        try:
+            df['RSI'] = ta.rsi(close=df['Close'], length=14)
+            df['SMA_50'] = ta.sma(close=df['Close'], length=50)
+            df['SMA_200'] = ta.sma(close=df['Close'], length=200)
+            df['ATR'] = ta.atr(high=df['High'], low=df['Low'], close=df['Close'], length=14)
+            
+            bb = ta.bbands(close=df['Close'], length=20, std=2)
+            if bb is not None: df['BBP'] = bb[bb.columns[0]]
+            
+            adx = ta.adx(high=df['High'], low=df['Low'], close=df['Close'], length=14)
+            if adx is not None: df['ADX'] = adx[adx.columns[0]]
+            
+            df['Rel_Strength_SP500'] = df['Close'] / df['SP500_Close']
+            df['Semi_Sector_Close'] = df['Close'] 
+            df['Volatility_20d'] = df['Close'].pct_change().rolling(20).std()
+            df.dropna(inplace=True)
+            
+        except Exception as e: return {"success": False, "error": f"Indicator Error: {e}"}
+        
+        filename = f"{symbol}_3y_enriched_data.csv"
+        file_path = os.path.join(DATA_DIR, filename)
+        df.to_csv(file_path)
+        return {"success": True, "rows": len(df), "period_used": period}
+        
+    except Exception as e: return {"success": False, "error": str(e)}
