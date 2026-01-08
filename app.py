@@ -269,5 +269,34 @@ def run_sim():
         return jsonify(data)
     except Exception as e: return jsonify({"error": str(e)})
 
+# --- MISSING HELPER ROUTES ---
+
+@app.route('/get_balance', methods=['GET'])
+def get_balance():
+    try:
+        if not os.path.exists("token.txt"): return jsonify({"success": False, "error": "Token missing"})
+        with open("token.txt", "r") as f: token = f.read().strip()
+        
+        # Authenticate
+        helper.update_session("Authorization", token)
+        helper.update_session("X-Robinhood-Account-Id", JOINT_ACCT_NUM)
+        helper.set_login_state(True)
+        
+        # Fetch Profile Data
+        data = helper.request_get(f"https://api.robinhood.com/accounts/{JOINT_ACCT_NUM}/", "regular")
+        
+        if data: 
+            return jsonify({"success": True, "cash": float(data.get('buying_power', 0))})
+        return jsonify({"success": False, "error": "Fetch failed"})
+    except Exception as e: 
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route('/save_token', methods=['POST'])
+def save_token():
+    token = request.json.get('token', '').strip()
+    if not token.startswith("Bearer "): return jsonify({"success": False, "error": "Invalid Token"})
+    with open("token.txt", "w") as f: f.write(token)
+    return jsonify({"success": True})
+
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

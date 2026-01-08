@@ -13,7 +13,7 @@
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
-
+    
     <style>
         body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
         .terminal-logs {
@@ -41,7 +41,14 @@
             <h1 class="text-3xl font-bold text-blue-400">🧠 Neural Trade Dashboard</h1>
             <p class="text-gray-400 text-sm">Robinhood API • Random Forest • Council of Strategies</p>
         </div>
-        <div class="text-right">
+        
+        <div class="flex gap-4 text-right">
+            
+            <div class="bg-gray-800 px-4 py-2 rounded-lg border border-gray-700">
+                <span class="text-xs text-gray-500 uppercase">Buying Power</span>
+                <div id="header-cash" class="font-bold text-white text-lg">---</div>
+            </div>
+
             <div id="connection-status" class="bg-gray-800 px-4 py-2 rounded-lg border border-gray-700">
                 <span class="text-xs text-gray-500 uppercase">Token Status</span>
                 <div class="font-bold text-green-400">{{ token_status }}</div>
@@ -126,6 +133,23 @@
     </div>
 
     <script>
+        // --- 0. INIT: Fetch Cash on Load ---
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const res = await fetch('/get_balance');
+                const data = await res.json();
+                if(data.success) {
+                    // Format as Currency
+                    const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(data.cash);
+                    document.getElementById('header-cash').innerText = formatted;
+                } else {
+                    document.getElementById('header-cash').innerText = "Auth Error";
+                }
+            } catch(e) {
+                document.getElementById('header-cash').innerText = "Offline";
+            }
+        });
+
         // --- 1. SIMULATION LOGIC ---
         async function runSimulation() {
             const ticker = document.getElementById('ticker-input').value;
@@ -193,17 +217,13 @@
                 const res = await fetch('/get_live_status');
                 const data = await res.json();
                 
-                // Update Logs
                 const logBox = document.getElementById('live-logs');
-                // Simple append strategy for now (clearing it creates flicker)
-                // In production, you'd verify IDs. Here we just dump reverse.
                 logBox.innerHTML = data.logs.slice().reverse().map(l => `<div class="log-entry"><span class="text-gray-400">${l}</span></div>`).join('');
                 
-                // Update Heartbeat
                 if(data.last_update) {
                     document.getElementById('bot-hb').innerText = `Last: ${data.last_update}`;
                 }
-            }, 2000); // Poll every 2 seconds
+            }, 2000); 
         }
 
         function stopPolling() {
