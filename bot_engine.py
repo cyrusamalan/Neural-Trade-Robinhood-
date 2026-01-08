@@ -1,19 +1,20 @@
 import pandas as pd
 import numpy as np
-import yfinance as yf
-import pandas_ta as ta
 from sklearn.ensemble import RandomForestClassifier
 import joblib
 import warnings
 import os
 from datetime import datetime
+import yfinance as yf
+import pandas_ta as ta
 from models import db, Trade, ModelDecision 
 
 warnings.filterwarnings("ignore")
 
-def get_simulation_data(app, ticker, file_path):
+def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10):
     """
-    Runs a Walk-Forward simulation AND saves results to Postgres.
+    Runs a Walk-Forward simulation on the LAST 'test_days' of data,
+    using a model trained on the 'train_days' prior to that.
     """
     
     with app.app_context():
@@ -23,12 +24,13 @@ def get_simulation_data(app, ticker, file_path):
         try:
             df = pd.read_csv(file_path, parse_dates=['Date'], index_col='Date')
         except Exception as e:
-            return {"error": f"Could not read data: {e}"}
+            return {"error": str(e)}
 
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.fillna(method='ffill', inplace=True)
         df.fillna(0, inplace=True)
 
+        # Predict 1 day ahead (Standard Swing Target)
         df['Future_Return'] = df['Close'].shift(-1) / df['Close'] - 1
         df['Target'] = (df['Future_Return'] > 0).astype(int)
         df['Is_Setup'] = (df['RSI'] < 55)
@@ -42,24 +44,33 @@ def get_simulation_data(app, ticker, file_path):
 
         # --- 2. Database Prep ---
         try:
-            # print(f"🧹 Clearing old backtest records for {ticker}...")
             Trade.query.filter_by(symbol=ticker, mode='BACKTEST').delete()
             db.session.commit()
         except Exception as e:
-            print(f"⚠️ Warning: Database clean failed: {e}")
+            # print(f"⚠️ Warning: Database clean failed: {e}")
             db.session.rollback()
 
-        # --- 3. Walk-Forward Loop ---
+        # --- 3. Determine Split Points ---
+        total_rows = len(df)
+        
+        # We want to simulate the LAST 'test_days'
+        start_index = total_rows - test_days
+        
+        # Ensure we don't start before we have data
+        if start_index < 50: start_index = 50 
+
         capital = 10000.0
         shares = 0
         in_trade = False
         active_trade = None 
-        start_index = 300 
-        retrain_interval = 24 
         current_model = None
+        
+        # How often to re-train the brain (e.g., every 5 days)
+        retrain_interval = 5 
 
-        print(f"Starting Walk-Forward Simulation for {ticker}...")
+        print(f"🌊 Swing Sim: Training on {train_days}d window, Testing last {test_days}d...")
 
+        # --- 4. The Simulation Loop ---
         for i in range(start_index, len(df)):
             current_date = df.index[i]
             current_row = df.iloc[i]
@@ -67,8 +78,12 @@ def get_simulation_data(app, ticker, file_path):
             date_str = current_date.strftime('%Y-%m-%d')
             
             # A. Retraining Logic
+            # We train on the window: [Current Day - Train Days] -> [Current Day]
             if i % retrain_interval == 0 or current_model is None:
-                historical_data = df.iloc[:i]
+                train_start_idx = max(0, i - train_days)
+                historical_data = df.iloc[train_start_idx:i]
+                
+                # Filter for Setup days (Smart Training)
                 training_set = historical_data[historical_data['Is_Setup'] == True]
                 
                 if len(training_set) > 20:
@@ -114,7 +129,7 @@ def get_simulation_data(app, ticker, file_path):
                 if price < active_trade['entry_price'] * 0.95:
                     exit_triggered = True; reason = "Stop Loss"
                     results['logs'].append({"date": date_str, "msg": f"STOP LOSS @ ${price:.2f}", "type": "loss"})
-                elif current_row['RSI'] > 55:
+                elif current_row['RSI'] > 75:  # <--- Let winners run longer!
                     exit_triggered = True; reason = "Take Profit"
                     results['logs'].append({"date": date_str, "msg": f"TAKE PROFIT @ ${price:.2f}", "type": "profit"})
 
@@ -128,36 +143,27 @@ def get_simulation_data(app, ticker, file_path):
                         pnl_pct = float((price - active_trade['entry_price']) / active_trade['entry_price'])
                         
                         new_trade = Trade(
-                            symbol=ticker,
-                            mode='BACKTEST',
-                            entry_time=active_trade['entry_time'],
-                            entry_price=float(active_trade['entry_price']),
-                            quantity=float(active_trade['quantity']),
-                            direction="LONG",
-                            exit_time=current_date,
-                            exit_price=float(price),
-                            pnl_dollar=pnl,
-                            pnl_percent=pnl_pct,
-                            exit_reason=reason
+                            symbol=ticker, mode='BACKTEST',
+                            entry_time=active_trade['entry_time'], entry_price=float(active_trade['entry_price']),
+                            quantity=float(active_trade['quantity']), direction="LONG",
+                            exit_time=current_date, exit_price=float(price),
+                            pnl_dollar=pnl, pnl_percent=pnl_pct, exit_reason=reason
                         )
                         
                         decision = ModelDecision(
                             confidence_score=float(active_trade['confidence']),
                             model_version="v2_walk_forward",
-                            symbol=ticker,
-                            decision_type="AI_SWING",
+                            symbol=ticker, decision_type="AI_SWING",
                             rsi_at_entry=float(active_trade['rsi']),
                             sma50_at_entry=float(active_trade['sma50']),
                             sma200_at_entry=float(active_trade['sma200']),
                             vix_at_entry=float(active_trade['vix']),
                             sp500_at_entry=float(active_trade['sp500'])
                         )
-                        
                         new_trade.decision = decision
                         db.session.add(new_trade)
                         db.session.commit()
                     except Exception as e:
-                        print(f"❌ DB Error: {e}")
                         db.session.rollback()
 
             current_val = capital + (shares * price)
@@ -165,24 +171,35 @@ def get_simulation_data(app, ticker, file_path):
             results['stock_price'].append(price)
             results['bot_balance'].append(current_val)
 
-        # --- 4. Final Live Training ---
-        final_train_set = df[df['Is_Setup'] == True]
+        # --- 5. Final Future Forecast ---
+        # Train one last time on the MOST RECENT window to be ready for tomorrow
+        final_train_start = max(0, len(df) - train_days)
+        final_train_set = df.iloc[final_train_start:]
+        final_train_set = final_train_set[final_train_set['Is_Setup'] == True]
+        
         if len(final_train_set) > 20:
             final_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
             final_model.fit(final_train_set[features], final_train_set['Target'])
             
             brain_package = {
-                "model": final_model,
-                "features": features,
-                "ticker": ticker,
-                "trained_at": datetime.now().strftime('%Y-%m-%d %H:%M')
+                "model": final_model, "features": features,
+                "ticker": ticker, "trained_at": datetime.now().strftime('%Y-%m-%d %H:%M')
             }
             joblib.dump(brain_package, "brain.pkl")
-            results['logs'].append({"date": "SYSTEM", "msg": f"🧠 Final Brain Saved for Live Trading", "type": "profit"})
+            
+            # Predict Tomorrow
+            try:
+                last_row = df.iloc[-1]
+                feat_vals = last_row[features].values.reshape(1, -1)
+                prob = final_model.predict_proba(feat_vals)[0][1]
+                signal = "BULLISH 🟢" if prob > 0.51 else "BEARISH 🔴"
+                msg = f"🔮 FORECAST (Next Day): {signal} (Conf: {prob:.2f})"
+                results['logs'].append({"date": "FUTURE", "msg": msg, "type": "forecast"})
+            except: pass
 
         return results
 
-# --- DATA DOWNLOADER (Required for app.py) ---
+# --- DATA DOWNLOADER (Required) ---
 def download_fresh_data(symbol):
     print(f"\n📥 Manager: Downloading history for {symbol}...")
     DATA_DIR = "datasets"  

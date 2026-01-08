@@ -19,27 +19,29 @@ def get_vote_emoji(vote):
     if vote <= -1: return "🔴 SELL"
     return "⚪ WAIT"
 
-def download_intraday_data(ticker):
-    print(f"📥 Fetching 60 days of 5-minute data for {ticker}...")
+def download_intraday_data(ticker, train_days=30):
+    period = "59d"
+    if train_days <= 5: period = "5d"
+    elif train_days <= 30: period = "1mo"
+    print(f"📥 Fetching {period} of 5-minute data for {ticker}...")
     try:
-        df = yf.Ticker(ticker).history(period=PERIOD, interval=INTERVAL)
+        df = yf.Ticker(ticker).history(period=period, interval=INTERVAL)
         if df.empty: return None
             
         df.ffill(inplace=True); df.bfill(inplace=True)
         
         # --- FIX: Calculate Indicators Globally ---
-        # This prevents the "KeyError: RSI"
         df['RSI'] = ta.rsi(df['Close'], length=14)
         
         # Calculate MACD for the new specialist
         macd = ta.macd(df['Close'])
         df = pd.concat([df, macd], axis=1) 
         
-        # Helper Features
         df['Volatility'] = df['Close'].pct_change().rolling(5).std()
         df['Volume_Trend'] = df['Volume'] / df['Volume'].rolling(20).mean()
         
-        # Create Target (Did price go up in next 3 candles?)
+        # --- DYNAMIC TARGET SHIFT ---
+        # Default horizon for day trading training is 3 candles (15 mins)
         df['Future_Return'] = df['Close'].shift(-3) / df['Close'] - 1
         df['Target'] = (df['Future_Return'] > 0.001).astype(int)
         
@@ -48,11 +50,12 @@ def download_intraday_data(ticker):
         print(f"Error: {e}")
         return None
 
-# ... inside day_engine.py ...
-
-def run_day_simulation(app, ticker):
+def run_day_simulation(app, ticker, train_days=30, test_days=4): 
+    # NOTE: 'test_days' here actually represents HOURS from the slider
+    
     with app.app_context():
-        df = download_intraday_data(ticker)
+        # --- FIX IS HERE: Use 'train_days' instead of 'days' ---
+        df = download_intraday_data(ticker, train_days=train_days)
         if df is None: return {"error": "No data"}
 
         print("🗳️ Polling the Council of Strategies...")
@@ -71,21 +74,31 @@ def run_day_simulation(app, ticker):
 
         X_full = pd.DataFrame(vote_history, index=valid_indices)
         y_full = df.loc[valid_indices, 'Target']
-        
-        # --- FIX: DEFINE FEATURES HERE ---
         features = list(X_full.columns)
-        # ---------------------------------
         
-        # 2. TRAIN MANAGER
-        split = int(len(X_full) * 0.7)
-        X_train = X_full.iloc[:split]
-        y_train = y_full.iloc[:split]
-        X_test = X_full.iloc[split:]
+        # --- 2. LOGIC SPLIT ---
+        # Calculate how many rows correspond to the requested simulation hours
+        # 1 Hour = 12 candles (5 min each)
+        sim_rows = int(test_days * 12)
+        
+        total_rows = len(X_full)
+        split_index = total_rows - sim_rows
+        
+        if split_index < 50: split_index = 50 # Safety floor
+
+        # Train on the data BEFORE the split
+        X_train = X_full.iloc[:split_index]
+        y_train = y_full.iloc[:split_index]
+        
+        # Test on the data AFTER the split (The Simulation Window)
+        X_test = X_full.iloc[split_index:]
+        
+        print(f"☀️ Day Sim: Training on {len(X_train)} candles, Simulating last {len(X_test)} candles")
         
         model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
         model.fit(X_train, y_train)
 
-        # 3. RUN SIMULATION
+        # --- 3. RUN SIMULATION (Loop over X_test) ---
         results = {"dates": [], "stock_price": [], "bot_balance": [], "logs": []}
         capital = 25000.0
         shares = 0
@@ -100,6 +113,7 @@ def run_day_simulation(app, ticker):
 
         print(f"☀️ Starting Sim for {ticker}...")
 
+        # Loop ONLY through the Test Data
         for i in range(len(X_test)):
             current_votes = X_test.iloc[i]
             current_time = current_votes.name.time()

@@ -248,23 +248,34 @@ def toggle_trading():
 @app.route('/get_live_status', methods=['GET'])
 def get_live_status(): return jsonify(live_state)
 
+# ... inside app.py ...
+
 @app.route('/run_sim', methods=['POST'])
 def run_sim():
     try:
         ticker = request.json.get('ticker', 'INTC').upper()
         mode = request.json.get('mode', 'swing')
+        
+        # --- NEW PARAMETERS ---
+        # Train Days: How much data the AI sees to learn
+        train_days = int(request.json.get('train_days', 365))
+        
+        # Test Days: How much recent data we actually SIMULATE
+        test_days = int(request.json.get('test_days', 10))
 
         if mode == 'day':
-            data = day_engine.run_day_simulation(app, ticker)
+            # Pass to Day Engine
+            data = day_engine.run_day_simulation(app, ticker, train_days=train_days, test_days=test_days)
         else:
             filename = f"{ticker}_3y_enriched_data.csv"
             file_path = os.path.join(DATA_DIR, filename)
+            
             if not os.path.exists(file_path): 
-                # Auto-download if missing
-                dl_res = bot_engine.download_fresh_data(ticker) # Assuming you have this helper available or handle error
+                dl_res = bot_engine.download_fresh_data(ticker)
                 if not os.path.exists(file_path): return jsonify({"error": "Data missing."})
                 
-            data = bot_engine.get_simulation_data(app, ticker, file_path)
+            # Pass to Swing Engine
+            data = bot_engine.get_simulation_data(app, ticker, file_path, train_days=train_days, test_days=test_days)
         
         return jsonify(data)
     except Exception as e: return jsonify({"error": str(e)})
