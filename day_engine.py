@@ -3,17 +3,21 @@ import numpy as np
 import yfinance as yf
 import pandas_ta as ta
 from datetime import time, datetime
-from sklearn.ensemble import RandomForestClassifier # <--- Added ML Library
-import joblib # <--- Added for saving brain
-from models import db, Trade, ModelDecision
+from sklearn.ensemble import RandomForestClassifier
+import joblib
+from models import db, Trade, ModelDecision, StrategyVote
+import strategies  # <--- This loads your Council of Strategies
 
 # --- SETTINGS ---
 INTERVAL = "5m" 
 PERIOD = "59d"
 FORCE_CLOSE_TIME = time(15, 55)
 
-def compute_rsi(series, period=14):
-    return ta.rsi(series, length=period)
+# Helper to pretty-print votes
+def get_vote_emoji(vote):
+    if vote >= 1: return "🟢 BUY"
+    if vote <= -1: return "🔴 SELL"
+    return "⚪ WAIT"
 
 def download_intraday_data(ticker):
     print(f"📥 Fetching 60 days of 5-minute data for {ticker}...")
@@ -23,17 +27,21 @@ def download_intraday_data(ticker):
             
         df.ffill(inplace=True); df.bfill(inplace=True)
         
-        # --- FEATURE ENGINEERING ---
-        # These are the inputs the "Brain" will learn from
-        df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
-        df['RSI'] = compute_rsi(df['Close'], 14)
-        df['SMA_20'] = ta.sma(df['Close'], length=20)
-        df['Dist_VWAP'] = (df['Close'] - df['VWAP']) / df['VWAP'] # How far are we from VWAP?
-        df['Volatility'] = df['Close'].pct_change().rolling(5).std() # Is the market crazy right now?
+        # --- FIX: Calculate Indicators Globally ---
+        # This prevents the "KeyError: RSI"
+        df['RSI'] = ta.rsi(df['Close'], length=14)
         
-        # Create Target (Did price go up in the next 3 candles?)
+        # Calculate MACD for the new specialist
+        macd = ta.macd(df['Close'])
+        df = pd.concat([df, macd], axis=1) 
+        
+        # Helper Features
+        df['Volatility'] = df['Close'].pct_change().rolling(5).std()
+        df['Volume_Trend'] = df['Volume'] / df['Volume'].rolling(20).mean()
+        
+        # Create Target (Did price go up in next 3 candles?)
         df['Future_Return'] = df['Close'].shift(-3) / df['Close'] - 1
-        df['Target'] = (df['Future_Return'] > 0.001).astype(int) # Target: > 0.1% profit
+        df['Target'] = (df['Future_Return'] > 0.001).astype(int)
         
         return df.dropna()
     except Exception as e:
@@ -45,97 +53,187 @@ def run_day_simulation(app, ticker):
         df = download_intraday_data(ticker)
         if df is None: return {"error": "No data"}
 
-        # Define the Features for the AI
-        features = ['RSI', 'Dist_VWAP', 'Volatility', 'Volume']
-        
-        # --- TRAIN THE AI (Walk-Forward) ---
-        model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-        
-        # Split data: Train on first 70%, Test on last 30%
-        split = int(len(df) * 0.7)
-        train_df = df.iloc[:split]
-        test_df = df.iloc[split:]
-        
-        # Train
-        X_train = train_df[features]
-        y_train = train_df['Target']
-        model.fit(X_train, y_train)
-        print("🧠 Day Trading AI Trained!")
+        print("🗳️ Polling the Council of Strategies (This takes a moment)...")
 
-        # --- SIMULATION ---
+        # 1. BUILD VOTE DATASET
+        vote_history = []
+        valid_indices = []
+
+        for i in range(50, len(df)):
+            market_slice = df.iloc[:i+1]
+            votes = strategies.get_council_votes(market_slice)
+            votes['Raw_RSI'] = df['RSI'].iloc[i]
+            votes['Raw_Volatility'] = df['Volatility'].iloc[i]
+            votes['Raw_Volume'] = df['Volume_Trend'].iloc[i]
+            vote_history.append(votes)
+            valid_indices.append(df.index[i])
+
+        X_full = pd.DataFrame(vote_history, index=valid_indices)
+        y_full = df.loc[valid_indices, 'Target']
+        features = list(X_full.columns)
+
+        # 2. TRAIN MANAGER
+        split = int(len(X_full) * 0.7)
+        X_train = X_full.iloc[:split]
+        y_train = y_full.iloc[:split]
+        X_test = X_full.iloc[split:]
+        
+        model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+        model.fit(X_train, y_train)
+        print("🧠 Council Manager Trained!")
+
+        # 3. RUN SIMULATION
         results = {"dates": [], "stock_price": [], "bot_balance": [], "logs": []}
         capital = 25000.0
         shares = 0
         in_trade = False
         active_trade = None
         
+        # Clear old sim data safely
         try:
-            Trade.query.filter_by(symbol=ticker, mode='DAY_BACKTEST').delete()
+            Trade.query.filter_by(symbol=ticker, mode='DAY_COUNCIL').delete()
             db.session.commit()
-        except: pass
+        except: 
+            db.session.rollback()
 
-        print(f"☀️ Starting AI Day Trade Sim for {ticker}...")
+        print(f"☀️ Starting Council-Managed Sim for {ticker}...")
 
-        # Run simulation on the TEST data (Unseen data)
-        for i in range(len(test_df)):
-            row = test_df.iloc[i]
-            current_time = row.name.time()
-            current_price = float(row['Close'])
+        for i in range(len(X_test)):
+            current_votes = X_test.iloc[i]
+            current_time = current_votes.name.time()
+            current_price = df.loc[current_votes.name]['Close']
             
-            # Prediction
-            feat_row = row[features].values.reshape(1, -1)
-            prob = model.predict_proba(feat_row)[0][1] # Confidence Score (0.0 to 1.0)
+            feat_row = current_votes.values.reshape(1, -1)
+            prob = model.predict_proba(feat_row)[0][1]
 
-            # 1. FORCE CLOSE
-            if in_trade and current_time >= FORCE_CLOSE_TIME:
-                pnl = (current_price - active_trade['entry_price']) * active_trade['quantity']
-                capital += pnl
-                in_trade = False
-                results['logs'].append({"date": str(row.name), "msg": "Force Close", "type": "loss"})
-                continue
+            # Log Strings
+            rsi_e = get_vote_emoji(current_votes['RSI_Vote'])
+            break_e = get_vote_emoji(current_votes['Breakout_Vote'])
+            heik_e = get_vote_emoji(current_votes['Heikin_Vote'])
+            macd_e = get_vote_emoji(current_votes['MACD_Vote']) 
+            council_log = f"🗳️ COUNCIL: RSI: {rsi_e} | Breakout: {break_e} | Heikin: {heik_e} | MACD: {macd_e}"
 
-            # 2. AI BUY LOGIC
+            # --- DECISION LOGIC ---
             if not in_trade:
-                # Safe Hours + High AI Confidence (> 55%)
-                if time(10,0) < current_time < time(15,0):
-                    if prob > 0.55: 
-                        shares = 25000 / current_price
-                        active_trade = {
-                            "entry_price": current_price,
-                            "quantity": shares,
-                            "entry_time": row.name.to_pydatetime()
+                # BUY SIGNAL
+                if time(10,0) < current_time < time(15,0) and prob > 0.51:
+                    shares = 25000 / current_price
+                    active_trade = {
+                        "entry_price": current_price,
+                        "quantity": shares,
+                        "entry_time": current_votes.name.to_pydatetime(),
+                        "confidence": prob,
+                        "votes": {
+                            "rsi": int(current_votes['RSI_Vote']),
+                            "breakout": int(current_votes['Breakout_Vote']),
+                            "heikin": int(current_votes['Heikin_Vote']),
+                            "macd": int(current_votes['MACD_Vote'])
                         }
-                        in_trade = True
-                        results['logs'].append({"date": str(row.name), "msg": f"AI BUY (Conf: {prob:.2f})", "type": "buy"})
+                    }
+                    in_trade = True
+                    results['logs'].append({"date": str(current_votes.name), "msg": f"{council_log} \n 🚀 AI BUY (Conf: {prob:.2f})", "type": "buy"})
+                
+                # HOLD SIGNAL
+                else:
+                    if prob > 0.40: 
+                        msg = f"{council_log} \n 🛡️ DECISION: HOLD (Confidence {prob:.2f} too low)"
+                        results['logs'].append({"date": str(current_votes.name), "msg": msg, "type": "info"})
+                        
+                        # SAVE HOLD TO DB
+                        votes_row = StrategyVote(
+                            vote_rsi=int(current_votes['RSI_Vote']),
+                            vote_breakout=int(current_votes['Breakout_Vote']),
+                            vote_heikin=int(current_votes['Heikin_Vote']),
+                            vote_fib=int(current_votes['MACD_Vote']) 
+                        )
+                        decision = ModelDecision(
+                            confidence_score=float(prob),
+                            model_version="v2_council", 
+                            decision_type="HOLD",
+                            symbol=ticker,
+                            rsi_at_entry=float(current_votes['Raw_RSI']),
+                            features_used="Council Votes: RSI, Breakout, Heikin, MACD"
+                        )
+                        decision.votes = votes_row 
+                        
+                        # --- SAFE COMMIT ---
+                        try:
+                            db.session.add(decision)
+                            db.session.commit()
+                        except Exception as e:
+                            print(f"⚠️ DB Warning (Hold): {e}")
+                            db.session.rollback()
 
-            # 3. EXIT LOGIC
+            # EXIT LOGIC
             elif in_trade:
-                # Standard Scalp Exits
+                should_sell = False
+                reason = ""
+                
                 if current_price >= active_trade['entry_price'] * 1.01:
-                    pnl = (current_price - active_trade['entry_price']) * active_trade['quantity']
-                    capital += pnl
-                    in_trade = False
-                    results['logs'].append({"date": str(row.name), "msg": "Profit Target", "type": "profit"})
+                    should_sell = True; reason = "Profit Target"
                 elif current_price <= active_trade['entry_price'] * 0.995:
+                    should_sell = True; reason = "Stop Loss"
+                elif current_time >= FORCE_CLOSE_TIME:
+                    should_sell = True; reason = "Force Close"
+                
+                if should_sell:
                     pnl = (current_price - active_trade['entry_price']) * active_trade['quantity']
+                    pnl_pct = (current_price - active_trade['entry_price']) / active_trade['entry_price']
                     capital += pnl
+                    
+                    new_trade = Trade(
+                        symbol=ticker,
+                        mode='DAY_COUNCIL',
+                        entry_time=active_trade['entry_time'],
+                        entry_price=float(active_trade['entry_price']),
+                        quantity=float(active_trade['quantity']),
+                        direction="LONG",
+                        exit_time=current_votes.name.to_pydatetime(),
+                        exit_price=float(current_price),
+                        pnl_dollar=float(pnl),
+                        pnl_percent=float(pnl_pct),
+                        exit_reason=reason
+                    )
+                    
+                    decision = ModelDecision(
+                        confidence_score=float(active_trade['confidence']),
+                        model_version="v2_council", 
+                        decision_type="AI_ENSEMBLE",
+                        symbol=ticker,
+                        rsi_at_entry=float(active_trade['votes']['rsi']),
+                        features_used="Council Votes: RSI, Breakout, Heikin, MACD"
+                    )
+                    
+                    votes_row = StrategyVote(
+                        vote_rsi=int(active_trade['votes']['rsi']),
+                        vote_breakout=int(active_trade['votes']['breakout']),
+                        vote_heikin=int(active_trade['votes']['heikin']),
+                        vote_fib=int(active_trade['votes']['macd']) 
+                    )
+                    
+                    decision.votes = votes_row 
+                    new_trade.decision = decision 
+                    
+                    # --- SAFE COMMIT ---
+                    try:
+                        db.session.add(new_trade)
+                        db.session.commit()
+                    except Exception as e:
+                        print(f"⚠️ DB Warning (Trade): {e}")
+                        db.session.rollback()
+                    
                     in_trade = False
-                    results['logs'].append({"date": str(row.name), "msg": "Stop Loss", "type": "loss"})
-            
-            # Record Data
-            results['dates'].append(row.name.strftime('%Y-%m-%d %H:%M'))
+                    log_type = "profit" if pnl > 0 else "loss"
+                    results['logs'].append({"date": str(current_votes.name), "msg": reason, "type": log_type})
+
+            results['dates'].append(current_votes.name.strftime('%Y-%m-%d %H:%M'))
             results['stock_price'].append(current_price)
             results['bot_balance'].append(capital)
-
-        # --- SAVE THE BRAIN ---
-        # We save it as 'day_brain.pkl' so it doesn't overwrite the swing brain
+        
+        # Save Brain
         brain_package = {
-            "model": model,
-            "features": features,
-            "ticker": ticker,
-            "type": "DAY_TRADING_5M"
+            "model": model, "features": features, "ticker": ticker, "type": "COUNCIL_MANAGER_5M"
         }
         joblib.dump(brain_package, "day_brain.pkl")
-        print("💾 Day Trading Brain Saved to 'day_brain.pkl'")
 
         return results

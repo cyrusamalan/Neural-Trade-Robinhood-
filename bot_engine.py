@@ -142,6 +142,12 @@ def get_simulation_data(app, ticker, file_path):
                         decision = ModelDecision(
                             confidence_score=float(active_trade['confidence']),
                             model_version="v2_walk_forward",
+                            
+                            # --- NEW FIELDS (Required for new DB) ---
+                            symbol=ticker,              # <--- ADD THIS
+                            decision_type="AI_SWING",   # <--- ADD THIS
+                            
+                            # --- EXISTING FIELDS (Keep these) ---
                             rsi_at_entry=float(active_trade['rsi']),
                             sma50_at_entry=float(active_trade['sma50']),
                             sma200_at_entry=float(active_trade['sma200']),

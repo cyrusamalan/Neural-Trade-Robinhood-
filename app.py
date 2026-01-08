@@ -14,7 +14,7 @@ import joblib
 import day_engine
 
 # --- IMPORT DATABASE MODELS ---
-from models import db, Trade, ModelDecision, MarketEvent 
+from models import db, Trade, ModelDecision
 
 app = Flask(__name__)
 
