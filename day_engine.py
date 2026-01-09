@@ -147,27 +147,8 @@ def run_day_simulation(app, ticker, train_days=30, test_days=4):
                 # HOLD SIGNAL
                 else:
                     if prob > 0.40: 
-                        votes_row = StrategyVote(
-                            vote_rsi=int(current_votes['RSI_Vote']),
-                            vote_breakout=int(current_votes['Breakout_Vote']),
-                            vote_heikin=int(current_votes['Heikin_Vote']),
-                            vote_fib=int(current_votes['MACD_Vote']) 
-                        )
-                        decision = ModelDecision(
-                            confidence_score=float(prob),
-                            model_version="v2_council", 
-                            decision_type="HOLD",
-                            symbol=ticker,
-                            rsi_at_entry=float(current_votes['Raw_RSI']),
-                            features_used="Council Votes"
-                        )
-                        decision.votes = votes_row 
-                        try:
-                            db.session.add(decision)
-                            db.session.commit()
-                        except: db.session.rollback()
-
-            # EXIT LOGIC
+                        pass
+                    
             elif in_trade:
                 should_sell = False
                 reason = ""

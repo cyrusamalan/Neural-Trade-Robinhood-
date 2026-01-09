@@ -129,7 +129,7 @@ def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10):
                 if price < active_trade['entry_price'] * 0.95:
                     exit_triggered = True; reason = "Stop Loss"
                     results['logs'].append({"date": date_str, "msg": f"STOP LOSS @ ${price:.2f}", "type": "loss"})
-                elif current_row['RSI'] > 75:  # <--- Let winners run longer!
+                elif current_row['RSI'] > 75: 
                     exit_triggered = True; reason = "Take Profit"
                     results['logs'].append({"date": date_str, "msg": f"TAKE PROFIT @ ${price:.2f}", "type": "profit"})
 
