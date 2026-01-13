@@ -107,6 +107,16 @@
 
             <div class="bg-slate-900 p-4 rounded-lg border border-indigo-900">
                 <h3 class="font-bold text-indigo-400 mb-2">2. Live Bot Control</h3>
+                
+                <div class="mb-3">
+                    <label class="block text-xs text-gray-400 mb-1">TRADE AMOUNT ($)</label>
+                    <div class="relative">
+                        <span class="absolute left-3 top-2 text-gray-500">$</span>
+                        <input type="number" id="trade-amount" value="10" min="1" 
+                            class="w-full bg-slate-800 border border-slate-700 rounded p-2 pl-6 text-white font-mono">
+                    </div>
+                </div>
+
                 <div class="flex items-center justify-between mb-4">
                     <span class="text-sm text-gray-400">Paper Mode</span>
                     <label class="relative inline-flex items-center cursor-pointer">
@@ -114,9 +124,11 @@
                         <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
                     </label>
                 </div>
+
                 <button id="btn-start" onclick="toggleLiveBot()" class="w-full bg-green-700 hover:bg-green-600 text-white font-bold py-2 rounded transition mb-2">
                     ▶️ Start Bot
                 </button>
+                
                 <div id="live-indicator" class="hidden mt-2 text-center">
                     <span class="inline-block w-3 h-3 bg-red-500 rounded-full status-pulse mr-2"></span>
                     <span class="text-xs text-red-400 font-mono" id="live-ticker-display">LIVE: INTC</span>
@@ -274,12 +286,21 @@
             const mode = document.getElementById('sim-mode').value;
             const paper = document.getElementById('paper-toggle').checked;
             
+            // NEW: Get the amount
+            const amount = document.getElementById('trade-amount').value; 
+            
             const action = isBotActive ? 'stop' : 'start';
 
             const response = await fetch('/toggle_trading', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: action, ticker: ticker, mode: mode, paper: paper })
+                body: JSON.stringify({ 
+                    action: action, 
+                    ticker: ticker, 
+                    mode: mode, 
+                    paper: paper,
+                    amount: amount  // <--- Send it here
+                })
             });
             const data = await response.json();
 

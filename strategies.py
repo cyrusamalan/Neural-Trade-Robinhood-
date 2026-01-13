@@ -1,127 +1,85 @@
+import pandas_ta as ta
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
-from sklearn.ensemble import IsolationForest
-from scipy.stats import linregress
 
-# --- 0. HELPER: DETECT MARKET REGIME ---
-def get_regime(df):
-    """Returns 1 for Uptrend, -1 for Downtrend"""
-    if len(df) < 200: return 0
-    
-    sma200 = ta.sma(df['Close'], length=200)
-    if sma200 is None or pd.isna(sma200.iloc[-1]): return 0
-    
-    price = df['Close'].iloc[-1]
-    if price > sma200.iloc[-1]: return 1
-    return -1
-
-# --- 1. STATISTICAL ANOMALY (Z-Score) ---
-def strategy_ml_anomaly(df):
-    """Uses Z-Score to find statistical anomalies instantly."""
-    if len(df) < 50: return 0
-    
-    vol = df['Volume']
-    mean_vol = vol.rolling(20).mean()
-    std_vol = vol.rolling(20).std()
-    
-    if std_vol.iloc[-1] == 0: return 0 
-    
-    z_score_vol = (vol.iloc[-1] - mean_vol.iloc[-1]) / std_vol.iloc[-1]
-    
-    if z_score_vol > 3:
-        if df['Close'].iloc[-1] > df['Open'].iloc[-1]:
-            return 2  # Anomalous Pump
-        else:
-            return -2 # Anomalous Dump
-            
-    return 0
-
-# --- 2. NEW: MACD HISTOGRAM REVERSAL (Replaces Linear Regression) ---
-def strategy_macd_histogram(df):
-    """
-    Votes BUY when the Histogram curls UP (Momentum Shift), even if trend is down.
-    This fixes the conflict with RSI.
-    """
-    # Calculate MACD (Fast=12, Slow=26, Signal=9)
-    if 'MACD_12_26_9' not in df.columns:
-        macd = ta.macd(df['Close'])
-        if macd is None: return 0
-        df = pd.concat([df, macd], axis=1)
-    
-    # The Histogram is usually the 2nd column in pandas_ta output
-    # It represents the distance between MACD line and Signal line
-    hist_col = df.columns[-2] 
-    hist = df[hist_col]
-    
-    curr = hist.iloc[-1]
-    prev = hist.iloc[-2]
-    prev2 = hist.iloc[-3]
-    
-    # Bullish Curl: Histogram was moving down, now moving up
-    # Logic: It's 'less red' than before, meaning selling is drying up
-    if curr > prev and prev > prev2:
-        return 2 # Strong Buy Signal (Momentum is turning)
-        
-    # Bearish Curl: Histogram was moving up, now moving down
-    if curr < prev and prev < prev2:
-        return -2 # Strong Sell Signal
-        
-    return 0
-
-# --- 3. ADAPTIVE RSI (High Confidence) ---
-def strategy_adaptive_rsi(df):
-    """
-    1. Checks Trend (Regime).
-    2. Calculates Dynamic Percentiles (Bottom 5%).
-    3. Only votes Strong Buy (2) if we are in an Uptrend AND oversold.
-    """
-    if 'RSI' not in df.columns: df['RSI'] = ta.rsi(df['Close'], length=14)
-    
-    last_rsi = df['RSI'].iloc[-1]
-    history = df['RSI'].iloc[-100:].dropna()
-    
-    if len(history) < 50: return 0
-    
-    regime = get_regime(df)
-    
-    low_threshold = np.percentile(history, 5)
-    high_threshold = np.percentile(history, 95)
-    
-    if regime == 1:
-        if last_rsi < low_threshold: return 2
-    elif regime == -1:
-        if last_rsi > high_threshold: return -2
-    else:
-        if last_rsi < 20: return 2
-        
-    return 0
-
-# --- 4. VWAP REJECTION ---
-def strategy_vwap(df):
-    """Buys when price touches VWAP in an uptrend"""
-    df['TP'] = (df['High'] + df['Low'] + df['Close']) / 3
-    df['VWAP'] = (df['TP'] * df['Volume']).cumsum() / df['Volume'].cumsum()
-    
-    price = df['Close'].iloc[-1]
-    vwap = df['VWAP'].iloc[-1]
-    
-    sma = ta.sma(df['Close'], length=50)
-    if sma is None: return 0
-    
-    if price > sma.iloc[-1]: 
-        dist = (price - vwap) / vwap
-        if abs(dist) < 0.002: return 1 
-        
-    return 0
-
-# --- VOTING BOOTH ---
 def get_council_votes(df):
-    if 'RSI' not in df.columns: df['RSI'] = ta.rsi(df['Close'], length=14)
+    """
+    Analyzes the dataframe and returns 'votes' (-1, 0, 1) from 4 different strategies.
+    Expected by day_engine.py and app.py.
+    """
     
-    return {
-        "RSI_Vote": strategy_adaptive_rsi(df),
-        "Breakout_Vote": strategy_ml_anomaly(df),
-        "VWAP_Vote": strategy_vwap(df),
-        "MACD_Vote": strategy_macd_histogram(df) # <--- UPDATED to use Histogram
+    # 1. Initialize Default Votes (Neutral)
+    votes = {
+        'RSI_Vote': 0,
+        'Breakout_Vote': 0,
+        'VWAP_Vote': 0,
+        'MACD_Vote': 0
     }
+
+    # SAFETY: If data is too short, return neutral votes immediately to prevent crash
+    if df is None or len(df) < 20:
+        return pd.Series(votes)
+
+    # COPY: Work on a copy to not affect the main loop's dataframe
+    df = df.copy()
+
+    # --- STRATEGY 1: RSI (Reversal) ---
+    try:
+        # If RSI isn't calculated yet, do it here
+        if 'RSI' not in df.columns:
+            df['RSI'] = ta.rsi(df['Close'], length=14)
+        
+        current_rsi = df['RSI'].iloc[-1]
+        
+        if current_rsi < 30: votes['RSI_Vote'] = 1   # Oversold -> Buy
+        elif current_rsi > 70: votes['RSI_Vote'] = -1 # Overbought -> Sell
+    except: pass
+
+    # --- STRATEGY 2: BREAKOUT (Bollinger Bands) ---
+    try:
+        # Calculate Bollinger Bands (20, 2)
+        bb = ta.bbands(df['Close'], length=20, std=2)
+        if bb is not None:
+            lower_band = bb[bb.columns[0]] # Lower
+            upper_band = bb[bb.columns[2]] # Upper
+            
+            current_price = df['Close'].iloc[-1]
+            
+            # If price closes above upper band -> Breakout Buy
+            if current_price > upper_band.iloc[-1]: 
+                votes['Breakout_Vote'] = 1
+            # If price closes below lower band -> Breakdown Sell
+            elif current_price < lower_band.iloc[-1]: 
+                votes['Breakout_Vote'] = -1
+    except: pass
+
+    # --- STRATEGY 3: VWAP (Trend) ---
+    # Note: day_engine.py maps 'heikin' to 'VWAP_Vote', so we use VWAP logic here.
+    try:
+        # Standard VWAP Calculation
+        df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
+        
+        current_price = df['Close'].iloc[-1]
+        current_vwap = df['VWAP'].iloc[-1]
+        
+        # Price above VWAP = Bullish
+        if current_price > current_vwap: votes['VWAP_Vote'] = 1
+        else: votes['VWAP_Vote'] = -1
+    except: pass
+
+    # --- STRATEGY 4: MACD (Momentum) ---
+    try:
+        macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+        if macd is not None:
+            # MACD Line: macd.columns[0], Signal Line: macd.columns[2]
+            macd_line = macd[macd.columns[0]]
+            signal_line = macd[macd.columns[2]]
+            
+            # Crossover Check
+            if macd_line.iloc[-1] > signal_line.iloc[-1]: 
+                votes['MACD_Vote'] = 1 # Bullish Cross
+            elif macd_line.iloc[-1] < signal_line.iloc[-1]: 
+                votes['MACD_Vote'] = -1 # Bearish Cross
+    except: pass
+
+    return pd.Series(votes)
