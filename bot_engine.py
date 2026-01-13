@@ -11,7 +11,7 @@ from models import db, Trade, ModelDecision
 
 warnings.filterwarnings("ignore")
 
-def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10):
+def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10, min_conf=0.51):
     """
     Runs a Walk-Forward simulation on the LAST 'test_days' of data,
     using a model trained on the 'train_days' prior to that.
@@ -89,7 +89,7 @@ def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10):
                 if len(training_set) > 20:
                     X_train = training_set[features]
                     y_train = training_set['Target']
-                    model = RandomForestClassifier(n_estimators=50, max_depth=4, random_state=42)
+                    model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
                     model.fit(X_train, y_train)
                     current_model = model
                 else:
@@ -102,7 +102,8 @@ def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10):
                         feat_vals = current_row[features].values.reshape(1, -1)
                         prob = current_model.predict_proba(feat_vals)[0][1]
                         
-                        if prob > 0.51:
+                        # --- USE NEW THRESHOLD HERE ---
+                        if prob > min_conf:
                             shares = capital / price
                             capital = 0
                             in_trade = True

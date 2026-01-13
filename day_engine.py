@@ -50,11 +50,11 @@ def download_intraday_data(ticker, train_days=30):
         print(f"Error: {e}")
         return None
 
-def run_day_simulation(app, ticker, train_days=30, test_days=4): 
+def run_day_simulation(app, ticker, train_days=30, test_days=4, min_conf=0.51): 
     # NOTE: 'test_days' here actually represents HOURS from the slider
     
     with app.app_context():
-        # --- FIX IS HERE: Use 'train_days' instead of 'days' ---
+        # --- FIX: Use 'train_days' for data fetching ---
         df = download_intraday_data(ticker, train_days=train_days)
         if df is None: return {"error": "No data"}
 
@@ -77,7 +77,6 @@ def run_day_simulation(app, ticker, train_days=30, test_days=4):
         features = list(X_full.columns)
         
         # --- 2. LOGIC SPLIT ---
-        # Calculate how many rows correspond to the requested simulation hours
         # 1 Hour = 12 candles (5 min each)
         sim_rows = int(test_days * 12)
         
@@ -95,10 +94,11 @@ def run_day_simulation(app, ticker, train_days=30, test_days=4):
         
         print(f"☀️ Day Sim: Training on {len(X_train)} candles, Simulating last {len(X_test)} candles")
         
-        model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+        # --- UPGRADE: Deep Thinking Model ---
+        model = RandomForestClassifier(n_estimators=200, max_depth=12, random_state=42)
         model.fit(X_train, y_train)
 
-        # --- 3. RUN SIMULATION (Loop over X_test) ---
+        # --- 3. RUN SIMULATION ---
         results = {"dates": [], "stock_price": [], "bot_balance": [], "logs": []}
         capital = 25000.0
         shares = 0
@@ -117,15 +117,25 @@ def run_day_simulation(app, ticker, train_days=30, test_days=4):
         for i in range(len(X_test)):
             current_votes = X_test.iloc[i]
             current_time = current_votes.name.time()
-            current_price = df.loc[current_votes.name]['Close']
+            
+            # Find the exact row index in the main DF for Hindsight lookups
+            try:
+                curr_idx = df.index.get_loc(current_votes.name)
+                current_price = df['Close'].iloc[curr_idx]
+            except: continue
             
             feat_row = current_votes.values.reshape(1, -1)
             prob = model.predict_proba(feat_row)[0][1]
 
+            # --- LIVE THOUGHT STREAM (Log only if interesting) ---
+            if prob > 0.40:
+                vote_summary = {k: v for k, v in current_votes.items() if v != 0}
+                print(f"[{current_votes.name.strftime('%H:%M')}] 🧠 Conf: {prob:.2f} | Signals: {vote_summary}")
+
             # --- DECISION LOGIC ---
             if not in_trade:
                 # BUY SIGNAL
-                if time(10,0) < current_time < time(15,0) and prob > 0.51:
+                if time(9,35) < current_time < time(15,0) and prob > min_conf:
                     shares = 25000 / current_price
                     active_trade = {
                         "entry_price": current_price,
@@ -133,29 +143,40 @@ def run_day_simulation(app, ticker, train_days=30, test_days=4):
                         "entry_time": current_votes.name.to_pydatetime(),
                         "confidence": prob,
                         "votes": {
-                            "rsi": int(current_votes['RSI_Vote']),
-                            "breakout": int(current_votes['Breakout_Vote']),
-                            "heikin": int(current_votes['Heikin_Vote']),
-                            "macd": int(current_votes['MACD_Vote'])
+                            "rsi": int(current_votes.get('RSI_Vote', 0)),
+                            "breakout": int(current_votes.get('Breakout_Vote', 0)),
+                            "heikin": int(current_votes.get('VWAP_Vote', 0)), 
+                            "macd": int(current_votes.get('MACD_Vote', 0))
                         }
                     }
                     in_trade = True
                     
                     msg = f"BUY @ ${current_price:.2f} (Conf: {prob:.2f})"
+                    print(f"\n🚀 [{current_votes.name.strftime('%H:%M')}] EXECUTE BUY! Conf: {prob:.2f}")
                     results['logs'].append({"date": str(current_votes.name), "msg": msg, "type": "buy"})
                 
-                # HOLD SIGNAL
+                # NO BUY? CHECK HINDSIGHT (Did we miss out?)
                 else:
-                    if prob > 0.40: 
-                        pass
-                    
+                    try:
+                        # Peek 12 candles ahead (1 hour)
+                        future_window = df['High'].iloc[curr_idx+1 : curr_idx+13]
+                        if not future_window.empty:
+                            max_future_price = future_window.max()
+                            missed_gain = (max_future_price - current_price) / current_price
+                            
+                            # If stock pumped > 1.0% in the next hour and we did nothing
+                            if missed_gain > 0.01:
+                                print(f"⚠️  [{current_votes.name.strftime('%H:%M')}] MISSED PUMP! +{missed_gain*100:.2f}% in next hr. (AI Conf: {prob:.2f})")
+                    except: pass
+
             elif in_trade:
                 should_sell = False
                 reason = ""
                 
-                if current_price >= active_trade['entry_price'] * 1.01:
+                if current_price >= active_trade['entry_price'] * 1.015:
                     should_sell = True; reason = "TAKE PROFIT"
-                elif current_price <= active_trade['entry_price'] * 0.995:
+                # Widen Stop Loss to 1.5% to survive market noise
+                elif current_price <= active_trade['entry_price'] * 0.985:
                     should_sell = True; reason = "STOP LOSS"
                 elif current_time >= FORCE_CLOSE_TIME:
                     should_sell = True; reason = "FORCE CLOSE"
@@ -194,6 +215,7 @@ def run_day_simulation(app, ticker, train_days=30, test_days=4):
                     log_type = "profit" if pnl > 0 else "loss"
                     
                     msg = f"{reason} @ ${current_price:.2f}"
+                    print(f"💰 [{current_votes.name.strftime('%H:%M')}] CLOSED TRADE: {reason} (${pnl:.2f})")
                     results['logs'].append({"date": str(current_votes.name), "msg": msg, "type": log_type})
 
             results['dates'].append(current_votes.name.strftime('%Y-%m-%d %H:%M'))

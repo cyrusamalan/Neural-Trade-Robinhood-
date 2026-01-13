@@ -89,8 +89,16 @@
                     <span>SIMULATION DURATION</span>
                     <span id="test-display" class="text-purple-400 font-bold">10 Days</span>
                 </label>
-                <input type="range" id="test-slider" min="5" max="60" value="10" oninput="updateLabels()" class="w-full mb-1">
-                <p class="text-[10px] text-gray-500 mb-1" id="test-desc">Run simulation on the last 10 days.</p>
+                <input type="range" id="test-slider" min="5" max="200" value="10" oninput="updateLabels()" class="w-full mb-1">
+                <p class="text-[10px] text-gray-500 mb-3" id="test-desc">Run simulation on the last 10 days.</p>
+                
+                <label class="block text-xs text-gray-500 mb-1 flex justify-between">
+                    <span>MIN CONFIDENCE</span>
+                    <span id="conf-display" class="text-green-400 font-bold">51%</span>
+                </label>
+                <input type="range" id="conf-slider" min="40" max="90" value="51" oninput="updateLabels()" class="w-full mb-1">
+                <p class="text-[10px] text-gray-500 mb-1">Lower = More Trades. Higher = Safer.</p>
+
             </div>
 
             <button onclick="runSimulation()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg transition border border-blue-500">
@@ -154,32 +162,39 @@
             const testSlider = document.getElementById('test-slider');
 
             if(mode === 'day') {
-                // Day Mode: Train on Days, Test in Hours
-                trainSlider.max = 60; trainSlider.value = 30; trainSlider.min = 5;
+                trainSlider.max = 50; trainSlider.value = 30; trainSlider.min = 5;
                 testSlider.max = 72; testSlider.value = 4; // Hours
             } else {
-                // Swing Mode: Train on Days, Test in Days
                 trainSlider.max = 700; trainSlider.value = 365; trainSlider.min = 60;
-                
-                // --- CHANGED MAX TO 100 ---
                 testSlider.max = 200; testSlider.value = 10; // Days
             }
             updateLabels();
         }
 
         function updateLabels() {
+            // ROBUST SAFETY CHECK
+            const trainDisplay = document.getElementById('train-display');
+            const testDisplay = document.getElementById('test-display');
+            const confDisplay = document.getElementById('conf-display');
+            const testDesc = document.getElementById('test-desc');
+
+            // If ANY element is missing, stop immediately to avoid crash
+            if (!trainDisplay || !testDisplay || !confDisplay || !testDesc) return;
+
             const mode = document.getElementById('sim-mode').value;
             const trainVal = document.getElementById('train-slider').value;
             const testVal = document.getElementById('test-slider').value;
+            const confVal = document.getElementById('conf-slider').value;
 
-            document.getElementById('train-display').innerText = `${trainVal} Days`;
+            trainDisplay.innerText = `${trainVal} Days`;
+            confDisplay.innerText = `${confVal}%`;
             
             if (mode === 'day') {
-                document.getElementById('test-display').innerText = `${testVal} Hours`;
-                document.getElementById('test-desc').innerText = `Simulate trading over the last ${testVal} hours.`;
+                testDisplay.innerText = `${testVal} Hours`;
+                testDesc.innerText = `Simulate trading over the last ${testVal} hours.`;
             } else {
-                document.getElementById('test-display').innerText = `${testVal} Days`;
-                document.getElementById('test-desc').innerText = `Simulate trading over the last ${testVal} days.`;
+                testDisplay.innerText = `${testVal} Days`;
+                testDesc.innerText = `Simulate trading over the last ${testVal} days.`;
             }
         }
 
@@ -200,6 +215,8 @@
             const mode = document.getElementById('sim-mode').value;
             const train_days = document.getElementById('train-slider').value;
             const test_days = document.getElementById('test-slider').value;
+            const min_conf = document.getElementById('conf-slider').value;
+            
             const logBox = document.getElementById('log-container');
 
             logBox.innerHTML = '<div class="text-blue-400 animate-pulse">Running Simulation...</div>';
@@ -208,8 +225,13 @@
                 const response = await fetch('/run_sim', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    // Mapping new slider logic to backend
-                    body: JSON.stringify({ ticker: ticker, mode: mode, train_days: train_days, test_days: test_days })
+                    body: JSON.stringify({ 
+                        ticker: ticker, 
+                        mode: mode, 
+                        train_days: train_days, 
+                        test_days: test_days,
+                        min_conf: min_conf
+                    })
                 });
                 const data = await response.json();
                 
@@ -243,7 +265,6 @@
             });
         }
         
-        // ... (Keep existing Live Bot Logic + renderBalance + renderChart) ...
         let livePoller = null;
         let isBotActive = false;
 
