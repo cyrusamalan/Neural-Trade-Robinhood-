@@ -135,7 +135,6 @@ def background_trader():
                 votes['Raw_Volume'] = df['Volume_Trend'].iloc[-1]
                 
                 # 4. Prepare Feature Vector
-                # We map the dictionary keys from 'votes' to the list 'features' expected by the model
                 try:
                     feat_values = [votes.get(f, 0) for f in features]
                 except Exception as e:
@@ -148,7 +147,6 @@ def background_trader():
             # === SWING TRADING MODE (Matches bot_engine.py) ===
             else:
                 # 1. Fetch External Market Data (SPY, VIX, TNX)
-                # We need these because the Swing model was trained on them
                 try:
                     spy = yf.Ticker("SPY").history(period="5d", interval="1h")['Close']
                     vix = yf.Ticker("^VIX").history(period="5d", interval="1h")['Close']
@@ -161,13 +159,13 @@ def background_trader():
                     
                     df = df.ffill().fillna(0) # Safety fill
                 except:
-                    # Fallback if external data fails (prevents crash, but warns)
+                    # Fallback if external data fails
                     live_state["logs"].append("⚠️ Market Data Fail. Using Fallbacks.")
                     df['SP500_Close'] = df['Close']
                     df['VIX_Close'] = 20.0
                     df['10Y_Yield'] = 4.0
 
-                # 2. Calculate Technical Indicators (Matches download_fresh_data)
+                # 2. Calculate Technical Indicators
                 df['RSI'] = ta.rsi(close=df['Close'], length=14)
                 df['SMA_50'] = ta.sma(close=df['Close'], length=50)
                 df['SMA_200'] = ta.sma(close=df['Close'], length=200)
@@ -233,20 +231,28 @@ def background_trader():
                         except Exception as e: live_state["logs"].append(f"❌ Buy Failed: {e}")
             
             else:
-                # SELL LOGIC (Matches Engines)
+                # --- NEW: DYNAMIC SELL LOGIC (Matches User Settings) ---
                 reason = None
                 
-                # Day Mode Exits
+                # 1. Retrieve Dynamic Risk Settings (Default: 2% SL, 4% TP)
+                sl_pct = live_state.get("stop_loss_pct", 0.02)
+                tp_pct = live_state.get("take_profit_pct", 0.04)
+                
+                # 2. Calculate Price Targets
+                stop_price = live_state["entry_price"] * (1 - sl_pct)
+                target_price = live_state["entry_price"] * (1 + tp_pct)
+                
+                # 3. Check for Exits
+                if current_price <= stop_price: 
+                    reason = f"Stop Loss (-{sl_pct*100}%)"
+                elif current_price >= target_price: 
+                    reason = f"Take Profit (+{tp_pct*100}%)"
+                
+                # 4. Special Day Trade Force Close (3:55 PM)
                 if current_mode == 'day':
                     now = datetime.now()
-                    if current_price >= live_state["entry_price"] * 1.015: reason = "Take Profit (+1.5%)"
-                    elif current_price <= live_state["entry_price"] * 0.985: reason = "Stop Loss (-1.5%)"
-                    elif now.hour == 15 and now.minute >= 55: reason = "EOD Force Close"
-                
-                # Swing Mode Exits
-                else:
-                    if current_price < live_state["entry_price"] * 0.95: reason = "Stop Loss (-5%)"
-                    elif last_rsi > 75: reason = "Take Profit (RSI > 75)"
+                    if now.hour == 15 and now.minute >= 55: 
+                        reason = "EOD Force Close"
 
                 if reason:
                     if live_state["paper_mode"]:
@@ -291,11 +297,20 @@ def toggle_trading():
     mode = request.json.get('mode', 'swing')
     paper = request.json.get('paper', True)
     
-    # NEW: Get amount (Default to $10 if missing)
+    # Existing: Get amount (Default to $10 if missing)
     try:
         amount = float(request.json.get('amount', 10.0))
     except:
         amount = 10.0
+
+    # NEW: Get Risk Settings (Default to 2% SL and 4% TP if missing)
+    try:
+        # Convert user input (e.g., 2.0) into decimal (0.02)
+        sl_pct = float(request.json.get('stop_loss', 2.0)) / 100.0 
+        tp_pct = float(request.json.get('take_profit', 4.0)) / 100.0
+    except:
+        sl_pct = 0.02
+        tp_pct = 0.04
     
     if action == 'start':
         if not live_state["active"]:
@@ -303,10 +318,16 @@ def toggle_trading():
             live_state["ticker"] = ticker
             live_state["mode"] = mode
             live_state["paper_mode"] = paper
-            live_state["trade_amount"] = amount  # <--- SAVE IT HERE
+            live_state["trade_amount"] = amount
+            
+            # NEW: Save Risk Settings to Global State
+            live_state["stop_loss_pct"] = sl_pct
+            live_state["take_profit_pct"] = tp_pct
             
             icon = "📝" if paper else "🚀"
+            # Update log to show risk parameters
             live_state["logs"].append(f"▶️ STARTING {icon} {mode.upper()} BOT on {ticker} (${amount:.2f}/trade)")
+            live_state["logs"].append(f"🛡️ RISK: Stop Loss -{sl_pct*100}% | Take Profit +{tp_pct*100}%")
             
             t = threading.Thread(target=background_trader); t.daemon = True; t.start()
     else:
@@ -327,14 +348,19 @@ def run_sim():
         train_days = int(request.json.get('train_days', 365))
         test_days = int(request.json.get('test_days', 10))
         
-        # --- NEW PARAMETER ---
-        # Get raw value (e.g. 51) and convert to decimal (0.51)
+        # 1. Get Confidence
         raw_conf = int(request.json.get('min_conf', 51))
         min_conf = raw_conf / 100.0
 
+        # 2. NEW: Get Risk Settings (Defaults match your old hardcoded values)
+        # We divide by 100 because the UI sends "2.0" for 2%
+        stop_loss = float(request.json.get('stop_loss', 2.0)) / 100.0
+        take_profit = float(request.json.get('take_profit', 4.0)) / 100.0
+
         if mode == 'day':
+            # Pass new args to day engine
             data = day_engine.run_day_simulation(
-                app, ticker, train_days=train_days, test_days=test_days, min_conf=min_conf
+                app, ticker, train_days, test_days, min_conf, stop_loss, take_profit
             )
         else:
             filename = f"{ticker}_3y_enriched_data.csv"
@@ -344,8 +370,9 @@ def run_sim():
                 dl_res = bot_engine.download_fresh_data(ticker)
                 if not os.path.exists(file_path): return jsonify({"error": "Data missing."})
                 
+            # Pass new args to swing engine
             data = bot_engine.get_simulation_data(
-                app, ticker, file_path, train_days=train_days, test_days=test_days, min_conf=min_conf
+                app, ticker, file_path, train_days, test_days, min_conf, stop_loss, take_profit
             )
         
         return jsonify(data)

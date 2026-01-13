@@ -70,7 +70,14 @@
     <div class="grid grid-cols-12 gap-6">
         <div class="col-span-3 space-y-4">
             <div class="bg-slate-800 p-4 rounded-lg border border-slate-700">
-                <h3 class="font-bold text-gray-300 mb-2">1. Settings</h3>
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="font-bold text-gray-300">1. Settings</h3>
+                    <button onclick="openSettings()" class="text-gray-400 hover:text-blue-400 transition">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M10.34 15.84c-.688-.06-1.386-.09-2.09-.09H7.5a4.5 4.5 0 110-9h.75c.704 0 1.402-.03 2.09-.09m0 9.18c.253.962.584 1.892.985 2.783.247.55.06 1.21-.463 1.511l-.657.38c-.551.318-1.26.117-1.527-.461a20.845 20.845 0 01-1.44-4.282m3.102.069a18.03 18.03 0 01-.59-4.59c0-1.586.205-3.124.59-4.59m0 9.18a23.848 23.848 0 018.835 2.535M10.34 6.66a23.847 23.847 0 008.835-2.535m0 0A23.74 23.74 0 0018.795 3m.38 1.125a23.91 23.91 0 011.014 5.395m-1.014 8.855c-.118.38-.245.754-.38 1.125m.38-1.125a23.91 23.91 0 001.014-5.395m0-3.46c.495.439.208 1.22-.428 1.503l-.657.38c-.551.318-1.26.117-1.527-.461a20.845 20.845 0 01-1.44-4.282m3.102.069c.495-.439.208-1.22-.428-1.503l-.657-.38c-.551-.318-1.26-.117-1.527.461a20.845 20.845 0 01-1.44 4.282" />
+                        </svg>
+                    </button>
+                </div>
                 <label class="block text-xs text-gray-500 mb-1">TICKER</label>
                 <input type="text" id="ticker-input" value="INTC" class="w-full bg-slate-900 border border-slate-600 rounded p-2 mb-3 text-white font-mono uppercase">
                 <label class="block text-xs text-gray-500 mb-1">MODE</label>
@@ -227,10 +234,14 @@
             const mode = document.getElementById('sim-mode').value;
             const train_days = document.getElementById('train-slider').value;
             const test_days = document.getElementById('test-slider').value;
-            const min_conf = document.getElementById('conf-slider').value;
+            
+            // --- NEW: Grab Settings from the Modal Inputs ---
+            // If the modal inputs don't exist (you haven't opened it yet), default to sensible values
+            const min_conf = document.getElementById('modal-conf') ? document.getElementById('modal-conf').value : 51;
+            const stop_loss = document.getElementById('modal-sl') ? document.getElementById('modal-sl').value : 2.0;
+            const take_profit = document.getElementById('modal-tp') ? document.getElementById('modal-tp').value : 4.0;
             
             const logBox = document.getElementById('log-container');
-
             logBox.innerHTML = '<div class="text-blue-400 animate-pulse">Running Simulation...</div>';
 
             try {
@@ -242,7 +253,10 @@
                         mode: mode, 
                         train_days: train_days, 
                         test_days: test_days,
-                        min_conf: min_conf
+                        // --- SEND NEW PARAMETERS ---
+                        min_conf: min_conf,
+                        stop_loss: stop_loss,
+                        take_profit: take_profit
                     })
                 });
                 const data = await response.json();
@@ -256,7 +270,7 @@
                 renderChart(data);
             } catch (e) { logBox.innerHTML = `<div class="text-red-500">Error: ${e}</div>`; }
         }
-
+        
         function renderLogs(logs, containerId) {
             const container = document.getElementById(containerId);
             container.innerHTML = "";
@@ -286,11 +300,16 @@
             const mode = document.getElementById('sim-mode').value;
             const paper = document.getElementById('paper-toggle').checked;
             
-            // NEW: Get the amount
-            const amount = document.getElementById('trade-amount').value; 
+            // 1. Get Trade Amount (from the main dashboard input we made earlier)
+            const amount = document.getElementById('trade-amount') ? document.getElementById('trade-amount').value : 10;
             
+            // 2. NEW: Get Risk Params from the Modal Inputs
+            const stopLoss = document.getElementById('modal-sl').value;
+            const takeProfit = document.getElementById('modal-tp').value;
+
             const action = isBotActive ? 'stop' : 'start';
 
+            // 3. Send everything to the server
             const response = await fetch('/toggle_trading', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -299,7 +318,9 @@
                     ticker: ticker, 
                     mode: mode, 
                     paper: paper,
-                    amount: amount  // <--- Send it here
+                    amount: amount,
+                    stop_loss: stopLoss,    // <--- Sending Modal Data
+                    take_profit: takeProfit // <--- Sending Modal Data
                 })
             });
             const data = await response.json();
@@ -382,6 +403,65 @@
             };
             Plotly.newPlot('chart', [trace1, trace2], layout);
         }
+
+        // --- MODAL FUNCTIONS ---
+
+        function openSettings() {
+            // Show the modal
+            document.getElementById('settings-modal').classList.remove('hidden');
+        }
+
+        function closeSettings() {
+            // Hide the modal without saving
+            document.getElementById('settings-modal').classList.add('hidden');
+        }
+
+        function saveSettings() {
+            // Just close the modal (the values stay in the inputs for toggleLiveBot to read)
+            const sl = document.getElementById('modal-sl').value;
+            const tp = document.getElementById('modal-tp').value;
+            
+            // Optional: Visual feedback
+            alert(`Risk Parameters Saved:\nStop Loss: ${sl}%\nTake Profit: ${tp}%`);
+            closeSettings();
+        }
     </script>
+
+    <div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-80 hidden flex items-center justify-center z-50">
+    <div class="bg-slate-800 border border-slate-600 rounded-lg p-6 w-80 shadow-2xl">
+        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2">
+            ⚙️ Strategy Parameters
+        </h3>
+        
+        <div class="mb-4">
+            <label class="block text-xs text-red-400 mb-1 font-bold">STOP LOSS (%)</label>
+            <div class="relative">
+                <span class="absolute left-3 top-2 text-gray-500">-</span>
+                <input type="number" id="modal-sl" value="2.0" step="0.1" min="0.1"
+                       class="w-full bg-slate-900 border border-slate-700 rounded p-2 pl-6 text-white font-mono focus:border-red-500 outline-none">
+            </div>
+            <p class="text-[10px] text-gray-500 mt-1">Triggers sell if price drops by X%</p>
+        </div>
+
+        <div class="mb-6">
+            <label class="block text-xs text-green-400 mb-1 font-bold">TAKE PROFIT (%)</label>
+            <div class="relative">
+                <span class="absolute left-3 top-2 text-gray-500">+</span>
+                <input type="number" id="modal-tp" value="4.0" step="0.1" min="0.1"
+                       class="w-full bg-slate-900 border border-slate-700 rounded p-2 pl-6 text-white font-mono focus:border-green-500 outline-none">
+            </div>
+            <p class="text-[10px] text-gray-500 mt-1">Triggers sell if price rises by X%</p>
+        </div>
+
+        <div class="flex gap-2">
+            <button onclick="closeSettings()" class="w-1/2 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded text-sm transition">
+                Cancel
+            </button>
+            <button onclick="saveSettings()" class="w-1/2 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded text-sm font-bold transition">
+                Save
+            </button>
+        </div>
+    </div>
+</div>
 </body>
 </html>

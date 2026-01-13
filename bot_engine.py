@@ -11,7 +11,7 @@ from models import db, Trade, ModelDecision
 
 warnings.filterwarnings("ignore")
 
-def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10, min_conf=0.51):
+def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10, min_conf=0.51, stop_loss=0.05, take_profit=0.04):
     """
     Runs a Walk-Forward simulation on the LAST 'test_days' of data,
     using a model trained on the 'train_days' prior to that.
@@ -127,13 +127,25 @@ def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10, mi
                 exit_triggered = False
                 reason = ""
                 
-                if price < active_trade['entry_price'] * 0.95:
-                    exit_triggered = True; reason = "Stop Loss"
-                    results['logs'].append({"date": date_str, "msg": f"STOP LOSS @ ${price:.2f}", "type": "loss"})
-                elif current_row['RSI'] > 75: 
-                    exit_triggered = True; reason = "Take Profit"
-                    results['logs'].append({"date": date_str, "msg": f"TAKE PROFIT @ ${price:.2f}", "type": "profit"})
+                # 1. Calculate Dynamic Thresholds based on your settings
+                # (Assumes stop_loss and take_profit are passed into the function)
+                stop_price = active_trade['entry_price'] * (1 - stop_loss)
+                target_price = active_trade['entry_price'] * (1 + take_profit)
 
+                # 2. Check Stop Loss
+                if price < stop_price:
+                    exit_triggered = True; reason = "Stop Loss"
+                    results['logs'].append({"date": date_str, "msg": f"STOP LOSS (-{stop_loss*100:.1f}%) @ ${price:.2f}", "type": "loss"})
+                
+                # 3. Check Price Target (NEW)
+                elif price >= target_price:
+                    exit_triggered = True; reason = "Take Profit"
+                    results['logs'].append({"date": date_str, "msg": f"TAKE PROFIT (+{take_profit*100:.1f}%) @ ${price:.2f}", "type": "profit"})
+
+                # 4. Check RSI Target (Keep this as a backup "smart" exit)
+                elif current_row['RSI'] > 75: 
+                    exit_triggered = True; reason = "Take Profit (RSI)"
+                    results['logs'].append({"date": date_str, "msg": f"TAKE PROFIT (RSI > 75) @ ${price:.2f}", "type": "profit"})
                 if exit_triggered:
                     capital = shares * price
                     shares = 0

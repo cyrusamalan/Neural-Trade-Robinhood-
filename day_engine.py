@@ -50,9 +50,7 @@ def download_intraday_data(ticker, train_days=30):
         print(f"Error: {e}")
         return None
 
-def run_day_simulation(app, ticker, train_days=30, test_days=4, min_conf=0.51): 
-    # NOTE: 'test_days' here actually represents HOURS from the slider
-    
+def run_day_simulation(app, ticker, train_days=30, test_days=4, min_conf=0.51, stop_loss=0.015, take_profit=0.015):    
     with app.app_context():
         # --- FIX: Use 'train_days' for data fetching ---
         df = download_intraday_data(ticker, train_days=train_days)
@@ -173,11 +171,18 @@ def run_day_simulation(app, ticker, train_days=30, test_days=4, min_conf=0.51):
                 should_sell = False
                 reason = ""
                 
-                if current_price >= active_trade['entry_price'] * 1.015:
-                    should_sell = True; reason = "TAKE PROFIT"
-                # Widen Stop Loss to 1.5% to survive market noise
-                elif current_price <= active_trade['entry_price'] * 0.985:
-                    should_sell = True; reason = "STOP LOSS"
+                # 2. REPLACE HARDCODED VALUES HERE
+                # Old: current_price >= active_trade['entry_price'] * 1.015
+                target_price = active_trade['entry_price'] * (1 + take_profit)
+                stop_price = active_trade['entry_price'] * (1 - stop_loss)
+
+                if current_price >= target_price:
+                    should_sell = True; reason = f"TAKE PROFIT (+{take_profit*100:.1f}%)"
+                
+                # Old: current_price <= active_trade['entry_price'] * 0.985
+                elif current_price <= stop_price:
+                    should_sell = True; reason = f"STOP LOSS (-{stop_loss*100:.1f}%)"
+                
                 elif current_time >= FORCE_CLOSE_TIME:
                     should_sell = True; reason = "FORCE CLOSE"
                 
