@@ -103,23 +103,31 @@ def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10, mi
                         prob = current_model.predict_proba(feat_vals)[0][1]
                         
                         # --- USE NEW THRESHOLD HERE ---
+                        # --- USE NEW THRESHOLD HERE ---
                         if prob > min_conf:
-                            shares = capital / price
-                            capital = 0
-                            in_trade = True
-                            
-                            active_trade = {
-                                "entry_time": current_date,
-                                "entry_price": float(price),
-                                "quantity": float(shares),
-                                "confidence": float(prob),
-                                "rsi": float(current_row.get('RSI', 0)),
-                                "sma50": float(current_row.get('SMA_50', 0)),
-                                "sma200": float(current_row.get('SMA_200', 0)),
-                                "vix": float(current_row.get('VIX_Close', 0)),
-                                "sp500": float(current_row.get('SP500_Close', 0))
-                            }
-                            results['logs'].append({"date": date_str, "msg": f"BUY @ ${price:.2f} (Conf: {prob:.2f})", "type": "buy"})
+                            # REALISM FIX: Check if there is a "tomorrow" to buy at
+                            if i + 1 < len(df):
+                                next_day_row = df.iloc[i + 1]
+                                execution_price = float(next_day_row['Open']) # Buy at Next Open
+                                
+                                shares = capital / execution_price
+                                capital = 0
+                                in_trade = True
+                                
+                                active_trade = {
+                                    "entry_time": next_day_row.name, # Entry date is tomorrow
+                                    "entry_price": execution_price,
+                                    "quantity": float(shares),
+                                    "confidence": float(prob),
+                                    "rsi": float(current_row.get('RSI', 0)),
+                                    "sma50": float(current_row.get('SMA_50', 0)),
+                                    "sma200": float(current_row.get('SMA_200', 0)),
+                                    "vix": float(current_row.get('VIX_Close', 0)),
+                                    "sp500": float(current_row.get('SP500_Close', 0))
+                                }
+                                results['logs'].append({"date": date_str, "msg": f"SIGNAL FIRED -> BUY NEXT OPEN @ ${execution_price:.2f}", "type": "buy"})
+                            else:
+                                print("Cannot buy on last day of simulation")
                     except Exception as e: 
                         print(f"Buy Error: {e}")
             
@@ -132,14 +140,18 @@ def get_simulation_data(app, ticker, file_path, train_days=365, test_days=10, mi
                 stop_price = active_trade['entry_price'] * (1 - stop_loss)
                 target_price = active_trade['entry_price'] * (1 + take_profit)
 
-                # 2. Check Stop Loss
-                if price < stop_price:
+                # 2. Check Stop Loss (Use LOW, not Close)
+                if current_row['Low'] <= stop_price:
                     exit_triggered = True; reason = "Stop Loss"
+                    # We assume we got stopped out exactly at our stop price
+                    price = stop_price 
                     results['logs'].append({"date": date_str, "msg": f"STOP LOSS (-{stop_loss*100:.1f}%) @ ${price:.2f}", "type": "loss"})
                 
-                # 3. Check Price Target (NEW)
-                elif price >= target_price:
+                # 3. Check Price Target (Use HIGH, not Close)
+                elif current_row['High'] >= target_price:
                     exit_triggered = True; reason = "Take Profit"
+                    # We assume we sold exactly at our target
+                    price = target_price
                     results['logs'].append({"date": date_str, "msg": f"TAKE PROFIT (+{take_profit*100:.1f}%) @ ${price:.2f}", "type": "profit"})
 
                 # 4. Check RSI Target (Keep this as a backup "smart" exit)
