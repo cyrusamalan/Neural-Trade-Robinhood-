@@ -126,7 +126,7 @@ def run_day_simulation(app, ticker, train_days=30, test_days=4, min_conf=0.51, s
             prob = model.predict_proba(feat_row)[0][1]
 
             # --- LIVE THOUGHT STREAM (Log only if interesting) ---
-            if prob > 0.40:
+            if prob > min_conf:
                 vote_summary = {k: v for k, v in current_votes.items() if v != 0}
                 print(f"[{current_votes.name.strftime('%H:%M')}] 🧠 Conf: {prob:.2f} | Signals: {vote_summary}")
 
