@@ -1,118 +1,145 @@
-# 📈 Neural-Trade-Robinhood
+# 📈 NeuralTrade: Quantitative Trading Ecosystem
 
-A full-stack algorithmic trading platform that automates technical analysis and machine learning strategies on Robinhood. This system features a "Strategy Tournament" engine that logs the performance of multiple algorithms (Trend Following, Mean Reversion, Gradient Boosting) into a PostgreSQL database to statistically determine the best trading logic for different market regimes.
-
-![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)
-![Database](https://img.shields.io/badge/PostgreSQL-14+-elephant.svg)
-![Framework](https://img.shields.io/badge/Flask-Backend-green.svg)
-![Status](https://img.shields.io/badge/Status-Live_Simulation-orange.svg)
+**A full-stack automated trading platform that bridges the gap between quantitative research and live execution.**
 
 ---
 
-## 📖 Overview
+## 📖 Executive Summary
 
-**Neural-Trade-Robinhood** is not just a trading bot; it is a quantitative research platform. It runs a "Squad" of distinct trading algorithms side-by-side:
-1.  **The Trend Surfer:** Captures massive bull runs (Best for NVDA, BTC).
-2.  **The Rubber Band:** Profits from sideways volatility and crashes (Best for NIO, ETH).
-3.  **The ML Sniper:** (Research) Uses Gradient Boosting to find volume-based anomalies.
+**NeuralTrade** is an algorithmic trading system built to solve the problem of "Model Overfitting" in financial markets. Instead of relying on a single rigid strategy, it employs an **Ensemble Machine Learning Architecture** dubbed **"The Council."**
 
-Instead of guessing which strategy works, this application logs every signal from every bot into a centralized database. It then tracks the *actual* stock movement over the next 1-5 days to statistically grade each model's "Predictive Power."
+The system aggregates real-time signals from multiple distinct technical algorithms (Trend, Mean Reversion, Momentum) and feeds them into a **Random Forest Meta-Model**. This model learns which strategies are currently profitable for a specific asset and adapts its confidence score dynamically.
 
----
-
-## 🏗️ Architecture & Data Pipeline
-
-The core differentiator of this project is its **Analysis-First** architecture.
-
-### 1. The Decision Engine (Python)
-* Runs daily before market open.
-* Fetches live data via `yfinance`.
-* Calculates technical indicators (RSI, Bollinger Bands, SMA 200, OBV).
-* Generates a vote (BUY/SELL/HOLD) from every strategy in the "Squad."
-
-### 2. The Persistence Layer (PostgreSQL)
-We do not just execute trades; we record the *intent*.
-* **Input Logging:** Every model's decision is saved to `strategy_logs` *before* any trade is made.
-* **Outcome Tagging:** A nightly cron job updates the database with the *actual* market return for that day.
-
-### 3. The Analytics Dashboard (Flask)
-* Queries the database to calculate real-time **Precision**, **Win Rate**, and **Sharpe Ratio** for each bot.
-* Visualizes which strategy is currently "Hot" (winning) and which is "Cold" (losing).
+The platform includes a **Hybrid Data Pipeline** to bypass API limitations (merging Stock/Crypto API data with Futures CSV data) and a **Visual Analytics Dashboard** for post-trade analysis.
 
 ---
 
-## 💾 Database Schema for Statistical Analysis
+## 🧠 Core Architecture: "The Council"
 
-We use a relational schema to separate "Signals" (Predictions) from "Reality" (Market Performance).
+The decision-making engine operates in two tiers to ensure high-precision entries.
 
-### Table 1: `strategy_logs`
-*Records the raw prediction signal from a model at a specific point in time.*
+### Tier 1: The Council (Feature Extraction)
 
-| Column | Type | Description |
-| :--- | :--- | :--- |
-| `id` | SERIAL | Primary Key |
-| `timestamp` | TIMESTAMP | Exact time of analysis |
-| `ticker` | VARCHAR(10) | e.g., "NIO", "NVDA" |
-| `strategy_name` | VARCHAR(50) | e.g., "Rubber_Band_v1", "Trend_SMA200" |
-| `signal` | VARCHAR(10) | "BUY", "SELL", "HOLD" |
-| `confidence` | FLOAT | 0.0 - 1.0 (ML Confidence Score) |
-| `market_price` | FLOAT | Price at the moment of signal generation |
-| `indicators_json` | JSONB | Snapshot of RSI, ADX, SMA at that moment (for debugging) |
+Market data is first analyzed by four distinct "Specialist" algorithms defined in `strategies.py`. Each casts a vote `(-1, 0, 1)`:
 
-### Table 2: `trade_outcomes`
-*Records the actual result of that signal (populated 24h - 5 days later).*
+1. **Reversal Specialist (RSI):** Detects overbought/oversold extremes.
+2. **Trend Follower (VWAP):** Confirms institutional control via Volume-Weighted Average Price.
+3. **Volatility Trader (Bollinger):** Identifies price expansion and breakouts.
+4. **Momentum Gauge (MACD):** Tracks shifts in price velocity.
 
-| Column | Type | Description |
-| :--- | :--- | :--- |
-| `log_id` | INT | Foreign Key to `strategy_logs` |
-| `actual_return_1d` | FLOAT | % Stock movement after 24 hours |
-| `actual_return_5d` | FLOAT | % Stock movement after 5 days |
-| `is_correct` | BOOLEAN | TRUE if Signal matched Market Direction |
-| `profit_loss_theoretical` | FLOAT | Dollar value P/L if $1000 was traded |
+### Tier 2: The Neural Manager (Random Forest)
 
-**✨ Why this matters:**
-This schema allows us to run SQL queries like:
-> *"Show me the Win Rate of the 'Rubber Band' strategy on NIO specifically when RSI was below 30."*
+A **Random Forest Classifier** ingests the Council's votes alongside macro-features (Volatility, SP500 Correlation). It outputs a **Probabilistic Confidence Score** (e.g., `0.85`).
+
+* **Dynamic Retraining:** The model retrains every 5 days on a rolling window to adapt to shifting market regimes.
 
 ---
 
-## 🚀 Key Strategies (The Squad)
+## 🚀 Key Features
 
-### 🌊 The Trend Surfer (`live_trader.py`)
-* **Logic:** Buy when Price > 200-Day SMA. Sell when Price < 200-Day SMA.
-* **Performance:** ~1696x return in backtests on volatile growth stocks.
-* **Best Use:** Bull Markets.
+### 🛠️ Hybrid Data Ingestion
 
-### 🧶 The Rubber Band (`live_rubber_band.py`)
-* **Logic:** Mean Reversion using Bollinger Bands (20, 2). Buy Low, Sell High.
-* **Performance:** The *only* strategy that profited on NIO during the 2022-2024 crash.
-* **Best Use:** Bear Markets & Sideways Chop.
+* **Multi-Asset Sync:** Automated API polling for **Stocks & Crypto** via `robin_stocks`.
+* **Futures Support:** Custom CSV ingestion engine to track **Robinhood Legend (Futures)** trades, overcoming the lack of public API endpoints for this asset class.
+* **Orphan Handling:** FIFO logic to reconcile "Buy" and "Sell" orders with mismatched timestamps.
+
+### 🧪 Advanced Simulation Engines
+
+* **Intraday Simulator:** A high-frequency engine (`day_engine.py`) processing 5-minute candles with "Force Close" logic at 3:55 PM.
+* **Hindsight Analytics:** Calculates "Opportunity Cost" by flagging missed pumps (>1%) where the AI confidence was too low.
+* **Walk-Forward Backtesting:** Strictly prevents data leakage by training on past data and testing on future data (`bot_engine.py`).
+
+### 📊 Interactive Dashboard
+
+* **Market Replay Mode:** A JavaScript tool to replay historical trading days candle-by-candle, visualizing exactly when and why the AI triggered a trade.
+* **P&L Calendar:** A heat-map visualization of daily trading performance.
+* **Real-Time Monitor:** Streams live price action and AI confidence scores via WebSocket-like polling.
+
+---
+
+## 📂 Project Structure
+
+```bash
+NeuralTrade/
+├── app.py                 # Main Flask Application & Route Handler
+├── bot_engine.py          # Swing Trading & Walk-Forward Backtester
+├── day_engine.py          # Intraday Simulator & Hindsight Analytics
+├── sync_trades.py         # Hybrid Data Ingestion (API + CSV)
+├── monitor.py             # Dashboard Backend API
+├── strategies.py          # "The Council" Technical Logic
+├── models.py              # SQLAlchemy Database Models
+├── templates/
+│   └── monitor.html       # Frontend Dashboard (Tailwind + Plotly)
+└── datasets/              # Historical Data & Futures CSVs
+
+```
 
 ---
 
 ## 🛠️ Installation & Setup
 
 ### 1. Prerequisites
-* Python 3.10+
-* PostgreSQL installed locally or via cloud (AWS RDS / Heroku).
-* Robinhood Account.
 
-### 2. Install Dependencies
+* Python 3.10+
+* PostgreSQL (Local or Cloud)
+* Robinhood Account
+
+### 2. Installation
+
 ```bash
-git clone [https://github.com/your-username/Neural-Trade-Robinhood.git](https://github.com/your-username/Neural-Trade-Robinhood.git)
-cd Neural-Trade-Robinhood
+# Clone the repository
+git clone https://github.com/your-username/NeuralTrade.git
+cd NeuralTrade
+
+# Install dependencies
 pip install -r requirements.txt
-=======
-📈 Neural-Trade-RobinhoodA full-stack algorithmic trading platform that automates technical analysis and machine learning strategies on Robinhood. This system features a "Strategy Tournament" engine that logs the performance of multiple algorithms (Trend Following, Mean Reversion, Gradient Boosting) into a PostgreSQL database to statistically determine the best trading logic for different market regimes.🏗️ Tech StackLanguage: Python 3.13+Trading API: robin_stocks (Robinhood), yfinance (Data Feeds)Data Science: pandas, pandas_ta, numpy, scikit-learnDatabase: PostgreSQLBackend Framework: Flask (for dashboard and API endpoints)🚀 Key Features1. Multi-Strategy ArchitectureThe bot does not rely on a single algorithm. It supports a "Squad" of strategies:The Trend Surfer: Uses 200-day SMA logic to capture long-term bull runs.The Rubber Band: Uses Bollinger Band Reversion to trade sideways/choppy markets (e.g., NIO).The ML Sniper: (Experimental) Uses Gradient Boosting & Random Forest to predict short-term moves based on volume and momentum.2. Live Trading EngineSafety First: Checks available cash (not margin) and reserves a buffer before every trade.Regime Detection: Automatically detects if a stock is in a "Bull" or "Bear" phase to switch strategies.Execution: Places fractional share orders directly via the Robinhood API.3. 📊 Performance Analysis & Database LoggingCrucially, this project does not just "fire and forget." It stores detailed analytics of every decision into PostgreSQL for audit and refinement.The Data Pipeline:Daily Prediction Log: Every morning, the system runs all strategies (even the inactive ones) and logs their "vote" (Buy/Sell/Hold) to the database.Outcome Tagging: A scheduled cron job runs 24 hours later to fetch the actual stock movement and updates the previous day's log.Statistical Scoring: Queries run against the DB to calculate real-time Sharpe Ratios, Precision, and Drawdown for each strategy.💾 Database SchemaThe application uses a relational schema to track model drift and accuracy over time.strategy_logs TableStores the raw decision from every model, every day.ColumnTypeDescriptionidSERIALPrimary KeytimestampTIMESTAMPTime of analysistickerVARCHAR(10)e.g., "NIO", "NVDA"strategy_nameVARCHAR(50)e.g., "Trend_SMA200", "ML_GradientBoost"signalVARCHAR(10)"BUY", "SELL", "HOLD"confidenceFLOAT0.0 - 1.0 (For ML models)market_priceFLOATPrice at the time of signalperformance_metrics TableUsed for the "Tournament" scoring.ColumnTypeDescriptionlog_idINTForeign Key to strategy_logsactual_return_1dFLOAT% Change of stock next dayactual_return_1wFLOAT% Change of stock next weekis_correctBOOLEANDid the signal match the market direction?🛠️ Installation & Setup1. PrerequisitesPython 3.10+ installed.PostgreSQL installed and running locally or on the cloud.Robinhood Account (Cash account recommended).2. Clone and InstallBashgit clone https://github.com/your-username/Neural-Trade-Robinhood.git
-cd Neural-Trade-Robinhood
-pip install -r requirements.txt
-3. ConfigurationCreate a .env file for your database credentials:BashDB_HOST=localhost
-DB_NAME=trading_bot
-DB_USER=your_username
-DB_PASS=your_password
-4. AuthenticationTo generate your Robinhood token (valid for 24 hours):Login to Robinhood Web.Open DevTools -> Application -> Local Storage.Copy the Authorization token.Run:Bashpython update_token.py
-(Paste the token when prompted).🏃‍♂️ UsageRunning the Live BotTo execute the active strategy (defaults to "Trend Surfer" for active stocks, "Rubber Band" for choppy ones):Bashpython live_trader.py
-Running the Strategy TournamentTo backtest all models and generate a scorecard:Bashpython ml_tournament.py
-Visualizing PerformanceTo generate charts showing entries, exits, and wealth curves:Bashpython visualize_strategy.py
-⚠️ DisclaimerThis software is for educational purposes only. Do not risk money you cannot afford to lose. The authors are not responsible for any financial losses incurred by using this software.
->>>>>>> e45f9c263b638007496db63d46252ddd5878a57c
+
+```
+
+### 3. Database Setup
+
+Create a PostgreSQL database named `neuraltraderobinhood` and configure your credentials in `app.py` and `sync_trades.py`.
+
+### 4. Authentication
+
+To generate your Robinhood token (valid for 24 hours):
+
+1. Log in to Robinhood Web.
+2. Open Developer Tools -> Application -> Local Storage.
+3. Copy the Authorization Bearer token.
+4. Save it to `token.txt` in the root directory.
+
+---
+
+## 🖥️ Usage
+
+### 1. Start the Dashboard
+
+```bash
+python monitor.py
+
+```
+
+* Access the dashboard at `http://localhost:5001` to view the **P&L Calendar** and **Market Replay**.
+
+### 2. Run the Data Sync (Background Service)
+
+```bash
+python sync_trades.py
+
+```
+
+* This script polls for new trades and ingests `futures_data.csv` if present.
+
+### 3. Run a Simulation
+
+Send a POST request to `/run_sim` or use the dashboard UI to trigger a backtest:
+
+* **Swing Mode:** Uses `bot_engine.py` (Daily candles).
+* **Day Mode:** Uses `day_engine.py` (5-min candles).
+
+---
+
+## ⚖️ Disclaimer
+
+*This software is for educational and research purposes only. Algorithmic trading involves significant risk of financial loss. The developers are not responsible for any losses incurred by using this software.*
